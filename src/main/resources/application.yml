@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: credit-payment-tracker
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/credit_tracker}
+    username: ${DB_USERNAME:tracker}
+    password: ${DB_PASSWORD:tracker_local}
+    hikari:
+      maximum-pool-size: 5
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+server:
+  address: 127.0.0.1
+  port: ${PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never

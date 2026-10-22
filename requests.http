@@ -1,0 +1,42 @@
+@base = http://localhost:8080/api/loans
+
+### Список кредитов
+GET {{base}}
+
+### Создать кредит. Ответ сохраняет loanId для следующих запросов.
+POST {{base}}
+Content-Type: application/json
+
+{
+  "name": "Кредит на ремонт",
+  "principal": 100000.00,
+  "annualRate": 12,
+  "monthlyPayment": 10000.00,
+  "firstPaymentDate": "2026-11-01"
+}
+
+> {% client.global.set("loanId", response.body.id); %}
+
+### Подробности и история
+GET {{base}}/{{loanId}}
+
+### Базовый график
+GET {{base}}/{{loanId}}/forecast
+
+### Прогноз: 2000 каждый месяц и 10000 разово
+GET {{base}}/{{loanId}}/forecast?extraMonthly=2000&oneTimeExtra=10000
+
+### Записать один платёж. Повтор с тем же requestId не создаёт второй.
+### Для следующего расчётного месяца замени requestId новым UUID.
+POST {{base}}/{{loanId}}/payments
+Content-Type: application/json
+
+{
+  "requestId": "51bb0470-21c0-4e94-b1e8-05b0a33154f2",
+  "amount": 12000.00
+}
+
+> {% client.global.set("lastPaymentId", response.body.id); %}
+
+### Отменить последнюю запись — запускать отдельно, только при необходимости
+DELETE {{base}}/{{loanId}}/payments/{{lastPaymentId}}

@@ -1,0 +1,5 @@
+spring:
+  datasource:
+    url: ${TEST_DB_URL:jdbc:postgresql://localhost:5432/credit_tracker_test}
+    username: ${TEST_DB_USERNAME:tracker}
+    password: ${TEST_DB_PASSWORD:tracker_local}

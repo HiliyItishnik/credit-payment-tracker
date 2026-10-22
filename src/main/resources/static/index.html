@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="План платежей, история и прогноз досрочного погашения кредита.">
+  <title>Платёж — трекер кредитов</title>
+  <link rel="stylesheet" href="/styles.css"><script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">К содержимому</a>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Платёж — главная"><span class="brand-icon">п.</span>Платёж<span class="brand-dot">●</span></a>
+    <p class="sidebar-caption">МОИ КРЕДИТЫ</p>
+    <nav id="loan-list" aria-label="Список кредитов"></nav>
+    <button class="sidebar-add open-create" type="button">＋ Добавить кредит</button>
+    <div class="sidebar-bottom"><span class="status-dot"></span> Локальный трекер<p>Маленькие шаги.<br>Большая свобода.</p><a href="/model.html">Как устроен расчёт ↗</a></div>
+  </aside>
+  <main id="main" class="main">
+    <header class="topbar"><span>Личные финансы <span class="separator">/</span> Кредиты</span><span class="edition">JAVA · PORTFOLIO PROJECT</span></header>
+    <div class="page-heading"><div><p class="eyebrow">ПЛАН НА ФИНАНСОВУЮ СВОБОДУ</p><h1>Кредиты под контролем</h1><p class="subtle">Каждый платёж приближает к цели.</p></div><button class="button primary open-create" type="button">＋ Новый кредит</button></div>
+    <p id="global-error" class="notice error" role="alert" hidden></p>
+    <p id="loading" class="loading" role="status">Загружаем кредиты…</p>
+    <section id="empty" class="empty card" hidden>
+      <div class="empty-art" aria-hidden="true">↗</div><p class="eyebrow">НАЧНИ С ПЕРВОГО ШАГА</p><h2>У каждого долга есть финиш</h2><p>Добавь кредит, чтобы увидеть путь до последнего платежа.<br>Сравни обычный график и досрочное погашение.</p><button class="button primary open-create" type="button">Добавить первый кредит</button>
+    </section>
+    <section id="workspace" hidden aria-label="Выбранный кредит">
+      <div class="loan-heading"><div><h2 id="loan-name"></h2><p id="loan-terms" class="subtle"></p></div><span id="loan-status" class="pill"></span></div>
+      <div class="metrics">
+        <article class="metric metric-dark"><p>Осталось погасить</p><strong id="balance"></strong><div class="progress-track"><span id="progress"></span></div><small id="progress-text"></small></article>
+        <article class="metric"><p>Погашено основного долга</p><strong id="principal-paid"></strong><small>Из внесённых платежей</small></article>
+        <article class="metric"><p>Уплачено процентов</p><strong id="interest-paid"></strong><small>За завершённые месяцы</small></article>
+        <article class="metric"><p>До полного погашения</p><strong id="months-left"></strong><small id="payoff-date"></small></article>
+      </div>
+      <div class="overview">
+        <article class="card chart-card"><div class="card-heading"><div><p class="eyebrow">ТВОЙ ПРОГРЕСС</p><h3>Остаток долга со временем</h3></div><span class="tiny-label">₽</span></div><div id="chart" class="chart"></div><div class="chart-legend"><span><i class="legend-dot base"></i>Обычный график</span><span id="scenario-legend" hidden><i class="legend-dot extra"></i>С досрочным погашением</span></div></article>
+        <article class="card payment-card"><div class="card-heading"><div><p class="eyebrow">ЕЩЁ ОДИН ШАГ</p><h3>Записать платёж</h3></div><span class="round-icon" aria-hidden="true">↗</span></div>
+          <p id="payment-period" class="subtle"></p>
+          <form id="payment-form"><label for="payment-amount">Сумма за расчётный месяц, ₽</label><input id="payment-amount" name="amount" inputmode="decimal" required autocomplete="off"><p id="payment-hint" class="field-hint"></p><button class="button primary full mutating" type="submit">Сохранить платёж</button><p id="payment-error" class="form-error" role="alert" hidden></p></form>
+          <p id="paid-off-message" class="success-message" hidden>Готово! Кредит погашен.<br>Все платежи сохранены в истории.</p>
+          <p class="small-note">Одна запись — один месяц. Если переводов было несколько, укажи их общую сумму.</p>
+        </article>
+      </div>
+      <section class="card details-card">
+        <div class="tabs" role="tablist" aria-label="Данные кредита">
+          <button id="tab-schedule" role="tab" aria-selected="true" aria-controls="panel-schedule" data-tab="schedule">График платежей</button>
+          <button id="tab-history" role="tab" aria-selected="false" aria-controls="panel-history" tabindex="-1" data-tab="history">История <span id="history-count">0</span></button>
+          <button id="tab-early" role="tab" aria-selected="false" aria-controls="panel-early" tabindex="-1" data-tab="early">Досрочное погашение</button>
+        </div>
+        <div id="panel-schedule" role="tabpanel" aria-labelledby="tab-schedule" tabindex="0" class="tab-panel"><div class="section-intro"><div><h3>План будущих платежей</h3><p class="subtle">От текущего остатка, с обычным ежемесячным платежом.</p></div><span id="future-interest" class="summary-chip"></span></div><div id="schedule-table"></div></div>
+        <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" tabindex="0" class="tab-panel" hidden><div class="section-intro"><div><h3>Внесённые платежи</h3><p class="subtle">Дата в таблице — расчётный месяц по графику.</p></div><button id="undo-payment" class="button secondary mutating" type="button" hidden>Отменить последний</button></div><div id="history-table"></div><p id="history-error" class="form-error" role="alert" hidden></p></div>
+        <div id="panel-early" role="tabpanel" aria-labelledby="tab-early" tabindex="0" class="tab-panel" hidden><div class="section-intro"><div><h3>Что изменит дополнительный платёж?</h3><p class="subtle">Сокращаем срок, сохраняя обычный платёж. Прогноз не меняет историю.</p></div></div>
+          <form id="forecast-form" class="forecast-form"><div><label for="extra-monthly">Дополнительно каждый месяц, ₽</label><input id="extra-monthly" inputmode="decimal" value="0" required></div><div><label for="one-time-extra">Разово к следующему платежу, ₽</label><input id="one-time-extra" inputmode="decimal" value="0" required></div><button class="button primary mutating" type="submit">Сравнить варианты</button></form><p id="forecast-error" class="form-error" role="alert" hidden></p>
+          <div class="scenario-metrics"><div><span>Экономия на будущих процентах</span><strong id="interest-saved"></strong></div><div><span>Сокращение срока</span><strong id="months-saved"></strong></div><div><span>Последний платёж</span><strong id="scenario-date"></strong></div></div>
+          <details class="scenario-details"><summary>Посмотреть график с досрочным погашением</summary><div id="scenario-table"></div></details>
+        </div>
+      </section>
+    </section>
+    <footer class="footer"><p>Фиксированная ставка · ежемесячное начисление · точность до копейки</p><a href="/model.html">Допущения расчёта ↗</a></footer>
+  </main>
+  <dialog id="create-dialog" aria-labelledby="dialog-title"><form id="create-form"><div class="dialog-heading"><div><p class="eyebrow">НОВАЯ ЦЕЛЬ</p><h2 id="dialog-title">Добавить кредит</h2></div><button id="close-dialog" class="close-button" type="button" aria-label="Закрыть">×</button></div><p class="subtle">Начнём с параметров. Дальше — понятный план.</p>
+    <label for="new-name">Название</label><input id="new-name" name="name" placeholder="Например, кредит на ремонт" maxlength="80" required>
+    <label for="new-principal">Начальная сумма долга, ₽</label><input id="new-principal" name="principal" inputmode="decimal" placeholder="300000" required>
+    <div class="form-grid"><div><label for="new-rate">Годовая ставка, %</label><input id="new-rate" name="annualRate" inputmode="decimal" placeholder="18" required></div><div><label for="new-monthly">Платёж в месяц, ₽</label><input id="new-monthly" name="monthlyPayment" inputmode="decimal" placeholder="15000" required></div></div>
+    <label for="new-date">Дата первого платежа</label><input id="new-date" name="firstPaymentDate" type="date" min="1900-01-01" max="2200-12-31" required><p class="field-hint">Дальше — тот же день месяца или последний день короткого месяца.</p>
+    <p id="create-error" class="form-error" role="alert" hidden></p><div class="dialog-actions"><button id="fill-example" class="button secondary" type="button">Подставить пример</button><button class="button primary mutating" type="submit">Создать кредит</button></div>
+  </form></dialog>
+</body>
+</html>

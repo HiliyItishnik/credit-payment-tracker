@@ -1,0 +1,35 @@
+name: Java and PostgreSQL checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: credit_tracker_test
+          POSTGRES_USER: tracker
+          POSTGRES_PASSWORD: tracker_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tracker -d credit_tracker_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DB_URL: jdbc:postgresql://localhost:5432/credit_tracker_test
+      TEST_DB_USERNAME: tracker
+      TEST_DB_PASSWORD: tracker_ci
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Unit tests, migrations and API integration tests
+        run: mvn -B --no-transfer-progress -Pintegration clean verify
