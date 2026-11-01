@@ -30,10 +30,14 @@ function decimal(value, allowZero = false, fraction = 2) {
   if (!pattern.test(normalized) || !Number.isFinite(Number(normalized)) || Number(normalized) > 1000000000 || (!allowZero && Number(normalized) <= 0)) {
     throw new Error('Введи сумму ' + (allowZero ? 'от 0' : 'больше 0') + ', не больше ' + fraction + ' знаков после запятой.');
   }
-  return normalized;
+  // Equivalent amounts must retain the same request ID when retrying a payment.
+  const [integer, decimals = ''] = normalized.split('.');
+  return integer.replace(/^0+(?=\d)/, '') + '.' + decimals.padEnd(fraction, '0');
 }
 
 async function refresh(preferredId = state.id) {
+  // A saved mutation makes the previous form stale even if reloading the list fails.
+  $('workspace').hidden = true; $('empty').hidden = true; $('loading').hidden = false;
   const loans = await api('');
   const nav = $('loan-list');
   nav.replaceChildren();
