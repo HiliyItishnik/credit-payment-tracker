@@ -16,16 +16,22 @@ final class CashCalendar {
     record Row(Event event, BigDecimal balance) {}
     record Gap(LocalDate date, BigDecimal missing) {}
     record Result(YearMonth month, BigDecimal openingBalance, List<Row> rows, Gap firstGap,
-                  int undatedEntries, boolean incompleteDebtSchedule) {}
+                  int undatedEntries, boolean incompleteDebtSchedule, BigDecimal reserve, Gap reserveGap) {}
 
     static Result build(YearMonth month, BigDecimal opening, Budget budget, List<Event> debtEvents,
                         boolean incompleteDebtSchedule) {
         var events = new ArrayList<>(debtEvents);
         int undated = addEntries(events, month, budget.incomes(), Kind.INCOME)
                 + addEntries(events, month, budget.expenses(), Kind.EXPENSE);
+        for (var entry : budget.oneOffs()) {
+            if (!YearMonth.from(entry.date()).equals(month)) continue;
+            Kind kind = entry.direction() == BudgetController.Direction.INCOME ? Kind.INCOME : Kind.EXPENSE;
+            events.add(new Event(entry.date(), kind, entry.name(), entry.amount()));
+        }
         events.sort(Comparator.comparing(Event::date).thenComparing(Event::kind));
         BigDecimal balance = opening;
         Gap gap = null;
+        Gap reserveGap = null;
         var rows = new ArrayList<Row>();
         for (int i = 0; i < events.size(); i++) {
             Event event = events.get(i);
@@ -33,8 +39,11 @@ final class CashCalendar {
             rows.add(new Row(event, balance));
             boolean endOfDay = i + 1 == events.size() || !events.get(i + 1).date().equals(event.date());
             if (endOfDay && gap == null && balance.compareTo(ZERO) < 0) gap = new Gap(event.date(), balance.negate());
+            if (endOfDay && reserveGap == null && budget.reserve().signum() > 0 && balance.compareTo(budget.reserve()) < 0) {
+                reserveGap = new Gap(event.date(), budget.reserve().subtract(balance));
+            }
         }
-        return new Result(month, opening, List.copyOf(rows), gap, undated, incompleteDebtSchedule);
+        return new Result(month, opening, List.copyOf(rows), gap, undated, incompleteDebtSchedule, budget.reserve(), reserveGap);
     }
 
     private static int addEntries(List<Event> events, YearMonth month, List<BudgetController.Entry> entries, Kind kind) {

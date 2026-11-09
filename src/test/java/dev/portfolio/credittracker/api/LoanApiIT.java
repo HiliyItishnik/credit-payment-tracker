@@ -243,6 +243,68 @@ class LoanApiIT {
                 .andExpect(jsonPath("$.plan.status").value("NO_DEBTS"))
                 .andExpect(jsonPath("$.plan.available").value(-1000));
     }
+
+    @Test void budgetReportsPaymentInActualMonthAndKeepsScheduleDate() throws Exception {
+        YearMonth now = YearMonth.now();
+        String id = createDebt("""
+                {"name":"Кредит","principal":5000,"annualRate":0,"monthlyPayment":1000,"firstPaymentDate":"%s"}
+                """.formatted(now.atDay(1)));
+        String paidOn = now.minusMonths(1).atEndOfMonth().toString();
+        UUID key = UUID.randomUUID();
+        String body = """
+                {"requestId":"%s","amount":1000,"paidOn":"%s"}
+                """.formatted(key, paidOn);
+        mvc.perform(post("/api/loans/" + id + "/payments").contentType(APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.paidOn").value(paidOn))
+                .andExpect(jsonPath("$.date").value(now.atDay(1).toString()));
+        mvc.perform(post("/api/loans/" + id + "/payments").contentType(APPLICATION_JSON)
+                .content(body.replace(paidOn, now.atDay(1).toString()))).andExpect(status().isConflict());
+        mvc.perform(get("/api/budget/months/" + now.minusMonths(1))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.paid").value(1000));
+        mvc.perform(get("/api/budget/months/" + now)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.paid").value(0));
+    }
+
+    @Test void oneOffOperationsAffectOnlyTheirMonthAndReserveFundsMinimumsBeforeExtras() throws Exception {
+        YearMonth now = YearMonth.now();
+        createDebt("""
+                {"name":"Кредит","principal":7000,"annualRate":0,"monthlyPayment":1000,"firstPaymentDate":"%s"}
+                """.formatted(now.atDay(1)));
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("""
+                {"incomes":[{"name":"Зарплата","amount":1000,"day":1}],"expenses":[],
+                 "reserve":1000,"openingReserve":1000,
+                 "oneOffs":[{"name":"Ремонт","amount":500,"date":"%s","direction":"EXPENSE"},
+                            {"name":"Премия","amount":2000,"date":"%s","direction":"INCOME"}]}
+                """.formatted(now.plusMonths(1).atDay(2), now.plusMonths(2).atDay(2))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.plan.months[0].reserveBalance").value(1000))
+                .andExpect(jsonPath("$.plan.months[1].reserveUsed").value(500))
+                .andExpect(jsonPath("$.plan.months[1].payments[0].extra").value(0))
+                .andExpect(jsonPath("$.plan.months[2].reserveBalance").value(1000))
+                .andExpect(jsonPath("$.plan.months[2].payments[0].extra").value(1500))
+                .andExpect(jsonPath("$.plan.months[3].payments[0].extra").value(0));
+        mvc.perform(get("/api/budget/calendar/" + now.plusMonths(1)).param("openingBalance", "1000"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rows[2].event.name").value("Ремонт"))
+                .andExpect(jsonPath("$.reserveGap.missing").value(500));
+    }
+
+    @Test void exportsImportableRemindersWithStableIdsAndEscapedNames() throws Exception {
+        YearMonth month = YearMonth.now().plusMonths(1);
+        String id = createDebt("""
+                {"name":"Кредит, пример; платёж","principal":1000,"annualRate":0,"monthlyPayment":1000,"firstPaymentDate":"%s"}
+                """.formatted(month.atDay(15)));
+        String calendar = mvc.perform(get("/api/budget/reminders.ics").param("days", "5"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", "attachment; filename=\"payment-reminders.ics\""))
+                .andReturn().getResponse().getContentAsString();
+        assertTrue(calendar.startsWith("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"));
+        assertTrue(calendar.contains("UID:" + id + "-1@credit-payment-tracker\r\n"));
+        assertTrue(calendar.contains("DTSTART:" + month.atDay(15).format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE) + "T090000\r\n"));
+        assertTrue(calendar.replace("\r\n ", "").contains("Кредит\\, пример\\; платёж"));
+        assertTrue(calendar.contains("TRIGGER:-P5D\r\n"));
+        mvc.perform(get("/api/budget/reminders.ics").param("days", "0")).andExpect(status().isBadRequest());
+    }
     @Test void createsLoanAndCorrectFirstScheduleRow() throws Exception {
         String id = createLoan();
         mvc.perform(get("/api/loans/" + id + "/forecast")).andExpect(status().isOk())

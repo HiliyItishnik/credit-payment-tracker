@@ -5,7 +5,7 @@ const currency = new Intl.NumberFormat('ru-RU', {style: 'currency', currency: 'R
 const monthFormat = new Intl.DateTimeFormat('ru-RU', {month: 'long', year: 'numeric'});
 const money = amount => currency.format(amount);
 const monthName = month => monthFormat.format(new Date(month + '-01T12:00:00')).replace(/\s*г\.$/u, '');
-const groups = ['incomes', 'expenses'];
+const groups = ['incomes', 'expenses', 'oneOffs'];
 let months = [];
 let shown = 0;
 let overview;
@@ -38,23 +38,24 @@ function markEdited() {
 }
 
 function addEntry(group, entry = {}, focus = false) {
-  const row = element('div', '', 'budget-entry');
+  const oneOff = group === 'oneOffs';
+  const row = element('div', '', oneOff ? 'budget-entry budget-one-off' : 'budget-entry');
   const nameLabel = element('label', 'Название');
   const name = element('input');
   name.name = 'name';
   name.required = true;
   name.maxLength = 80;
-  name.placeholder = group === 'incomes' ? 'Зарплата' : 'Например, аренда';
+  name.placeholder = oneOff ? 'Например, премия' : group === 'incomes' ? 'Зарплата' : 'Например, аренда';
   name.value = entry.name ?? '';
   nameLabel.append(name);
-  const amountLabel = element('label', 'В месяц, ₽');
+  const amountLabel = element('label', oneOff ? 'Сумма, ₽' : 'В месяц, ₽');
   const amount = element('input');
   amount.name = 'amount';
   amount.inputMode = 'decimal';
   amount.required = true;
   amount.value = entry.amount ?? '';
   amountLabel.append(amount);
-  const dayLabel = element('label', 'День');
+  const dayLabel = element('label', oneOff ? 'Дата' : 'День');
   const day = element('input');
   day.type = 'number';
   day.name = 'day';
@@ -64,15 +65,35 @@ function addEntry(group, entry = {}, focus = false) {
   day.placeholder = '—';
   day.value = entry.day ?? '';
   dayLabel.append(day);
+  row.append(nameLabel, amountLabel, dayLabel);
+  if (oneOff) {
+    day.type = 'date';
+    day.name = 'date';
+    day.min = '1900-01-01';
+    day.max = '2200-12-31';
+    day.required = true;
+    day.value = entry.date ?? '';
+    const typeLabel = element('label', 'Тип');
+    const direction = element('select');
+    direction.name = 'direction';
+    for (const [value, label] of [['INCOME', 'Доход'], ['EXPENSE', 'Расход']]) {
+      const option = element('option', label);
+      option.value = value;
+      direction.append(option);
+    }
+    direction.value = entry.direction ?? 'INCOME';
+    typeLabel.append(direction);
+    row.append(typeLabel);
+  }
   const remove = element('button', '×', 'button danger budget-remove');
   remove.type = 'button';
-  remove.setAttribute('aria-label', group === 'incomes' ? 'Убрать доход' : 'Убрать расход');
+  remove.setAttribute('aria-label', oneOff ? 'Убрать операцию' : group === 'incomes' ? 'Убрать доход' : 'Убрать расход');
   remove.addEventListener('click', () => {
     row.remove();
     markEdited();
-    $(group === 'incomes' ? 'add-income' : 'add-expense').focus();
+    $(oneOff ? 'add-one-off' : group === 'incomes' ? 'add-income' : 'add-expense').focus();
   });
-  row.append(nameLabel, amountLabel, dayLabel, remove);
+  row.append(remove);
   $(group).append(row);
   if (focus) name.focus();
 }
@@ -83,6 +104,9 @@ function readEntries(group) {
     const amount = row.querySelector('[name=amount]').value.trim().replace(',', '.');
     if (!name || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0 || Number(amount) > 1e9) {
       throw new Error('Укажи название и сумму от 0,01 до 1 млрд ₽ с точностью до копеек.');
+    }
+    if (group === 'oneOffs') {
+      return {name, amount, date: row.querySelector('[name=date]').value, direction: row.querySelector('[name=direction]').value};
     }
     const day = row.querySelector('[name=day]').value;
     return {name, amount, day: day ? Number(day) : null};
@@ -96,6 +120,10 @@ function renderNextMonths() {
     const title = element('summary', monthName(month.month) + ' · ' + money(month.total));
     const summary = element('p', 'Плановые платежи: ' + money(month.minimum)
       + ' · Доплата: ' + money(month.total - month.minimum) + ' · Свободно: ' + money(month.remaining), 'subtle');
+    if (overview.budget.reserve > 0) {
+      summary.textContent += ' · Резерв: ' + money(month.reserveBalance);
+      if (month.reserveUsed > 0) summary.textContent += ' · Из резерва: ' + money(month.reserveUsed);
+    }
     const wrap = element('div', '', 'table-wrap');
     wrap.tabIndex = 0;
     wrap.setAttribute('role', 'region');
@@ -249,12 +277,14 @@ $('calendar-form').addEventListener('submit', async event => {
     const month = $('calendar-month').value;
     const query = new URLSearchParams({openingBalance: amountInput('calendar-opening')});
     const calendar = await budgetApi(undefined, '/calendar/' + month + '?' + query);
-    const {rows, firstGap, undatedEntries, incompleteDebtSchedule} = calendar;
+    const {rows, firstGap, undatedEntries, incompleteDebtSchedule, reserveGap, reserve, openingBalance} = calendar;
     const warnings = [];
     if (firstGap) warnings.push('К ' + dayName(firstGap.date) + ' не хватит ' + money(firstGap.missing) + '.');
+    if (openingBalance < reserve) warnings.push('Остаток на начало месяца ниже резерва на ' + money(reserve - openingBalance) + '.');
+    if (reserveGap) warnings.push('К ' + dayName(reserveGap.date) + ' до цели резерва будет не хватать ' + money(reserveGap.missing) + '.');
     if (undatedEntries) warnings.push('Строк без даты: ' + undatedEntries + '. Укажи день, чтобы учесть их в календаре.');
     if (incompleteDebtSchedule) warnings.push('Месяц за пределами расчёта обязательных платежей.');
-    message.classList.toggle('error', Boolean(firstGap));
+    message.classList.toggle('error', Boolean(firstGap || reserveGap) || openingBalance < reserve);
     message.textContent = warnings.join(' ') || (rows.length ? 'По указанным датам денег хватает.' : 'На этот месяц событий нет.');
     if (rows.length) {
       const kinds = {INCOME: 'Доход', EXPENSE: 'Расход', PAYMENT: 'Платёж по графику', RECORDED_PAYMENT: 'Записанный платёж'};
@@ -315,10 +345,10 @@ function showError(error) {
   $('budget-error').hidden = false;
 }
 
-for (const [id, group] of [['add-income', 'incomes'], ['add-expense', 'expenses']]) {
+for (const [id, group, limit] of [['add-income', 'incomes', 50], ['add-expense', 'expenses', 50], ['add-one-off', 'oneOffs', 100]]) {
   $(id).addEventListener('click', () => {
-    if ($(group).children.length >= 50) {
-      showError(new Error('В каждом списке может быть до 50 строк.'));
+    if ($(group).children.length >= limit) {
+      showError(new Error('В этом списке может быть до ' + limit + ' строк.'));
       return;
     }
     addEntry(group, {}, true);
@@ -332,7 +362,10 @@ $('budget-form').addEventListener('submit', async event => {
   $('budget-error').hidden = true;
   setBusy(true);
   try {
-    const budget = {incomes: readEntries('incomes'), expenses: readEntries('expenses')};
+    const budget = {
+      incomes: readEntries('incomes'), expenses: readEntries('expenses'), oneOffs: readEntries('oneOffs'),
+      reserve: amountInput('budget-reserve'), openingReserve: amountInput('budget-opening-reserve')
+    };
     renderOverview(await budgetApi(jsonPut(budget)));
     $('budget-status').textContent = 'Бюджет сохранён.';
   } catch (error) {
@@ -347,6 +380,8 @@ async function loadBudget() {
     const result = await budgetApi();
     const {budget} = result;
     for (const group of groups) for (const entry of budget[group]) addEntry(group, entry);
+    $('budget-reserve').value = budget.reserve;
+    $('budget-opening-reserve').value = budget.openingReserve;
     $('budget-form').hidden = false;
     renderOverview(result);
   } catch (error) {

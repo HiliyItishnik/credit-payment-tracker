@@ -71,14 +71,18 @@ public class LoanService {
         Loan loan = loans.findLockedById(id).orElseThrow(this::notFound);
         var existing = payments.findByLoanIdAndRequestId(id, request.requestId());
         if (existing.isPresent()) {
-            if (existing.get().getAmount().compareTo(request.amount()) != 0) {
-                throw new ApiException(HttpStatus.CONFLICT, "Этот requestId уже использован для другой суммы.");
+            if (existing.get().getAmount().compareTo(request.amount()) != 0
+                    || request.paidOn() != null && !request.paidOn().equals(existing.get().getPaidOn())) {
+                throw new ApiException(HttpStatus.CONFLICT, "Этот requestId уже использован для другой суммы или даты.");
             }
             return view(existing.get());
         }
         List<Payment> history = history(id);
         var split = calculator.splitPayment(loan.terms(), balance(loan, history), history.size(), request.amount());
-        return view(payments.saveAndFlush(new Payment(loan, request.requestId(), history.size() + 1, split)));
+        if (request.paidOn() != null && request.paidOn().getYear() < 1900) {
+            throw new CalculationException("Дата оплаты должна быть не раньше 1900 года.");
+        }
+        return view(payments.saveAndFlush(new Payment(loan, request.requestId(), history.size() + 1, split, request.paidOn())));
     }
 
     @Transactional
@@ -150,6 +154,6 @@ public class LoanService {
     }
     private PaymentView view(Payment p) {
         return new PaymentView(p.getId(), p.getInstallmentNumber(), p.getDueDate(), p.getAmount(),
-                p.getInterest(), p.getPrincipal(), p.getBalance(), p.getRecordedAt());
+                p.getInterest(), p.getPrincipal(), p.getBalance(), p.getRecordedAt(), p.getPaidOn());
     }
 }

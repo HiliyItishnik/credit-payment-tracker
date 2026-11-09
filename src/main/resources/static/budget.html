@@ -35,6 +35,20 @@
           <button id="add-expense" class="button secondary" type="button">＋ Добавить расход</button>
         </fieldset>
       </div>
+      <fieldset class="card budget-card budget-tool">
+        <legend>Разовые операции</legend>
+        <p class="subtle">Премия, ремонт и другие суммы, которые влияют только на месяц указанной даты.</p>
+        <div id="oneOffs" class="budget-entries"></div>
+        <button id="add-one-off" class="button secondary" type="button">＋ Добавить операцию</button>
+      </fieldset>
+      <fieldset class="card budget-card budget-tool">
+        <legend>Резерв</legend>
+        <div class="budget-inline">
+          <label>Целевой резерв, ₽<input id="budget-reserve" inputmode="decimal" value="0" required></label>
+          <label>Стартовый резерв для прогноза, ₽<input id="budget-opening-reserve" inputmode="decimal" value="0" required></label>
+        </div>
+        <p class="subtle">Сначала план покрывает обязательные платежи и пополняет резерв. На досрочные платежи идут деньги сверх цели. Сохранённая часть резерва переходит на следующий месяц.</p>
+      </fieldset>
       <div class="budget-actions">
         <button id="budget-save" class="button primary" type="submit">Сохранить и рассчитать план</button>
         <p id="budget-status" class="subtle" role="status"></p>
@@ -55,7 +69,7 @@
           <option value="alternative">Сначала самые маленькие долги</option>
         </select>
       </label>
-      <p class="subtle">Обе стратегии сначала покрывают плановые платежи. Доплата идёт на долг с самыми высокими процентами на рубль остатка или на самый маленький остаток. Учтены платежи, уже записанные за текущий месяц. Свободные деньги между месяцами не переносятся.</p>
+      <p class="subtle">Доплата идёт на долг с самыми высокими процентами на рубль остатка или на самый маленький остаток. Прогноз учитывает фактические даты оплаты и разовые операции. Между месяцами переносится только резерв.</p>
       <div id="budget-months" class="budget-months"></div>
       <button id="budget-more" class="button secondary" type="button" hidden>Показать ещё месяцы</button>
     </section>
@@ -71,9 +85,17 @@
         <p id="calendar-message" class="notice" role="status"></p>
         <div id="calendar-results" class="table-wrap" tabindex="0" role="region" aria-label="Движение денег по датам" hidden></div>
       </section>
+      <section class="card budget-card budget-tool" aria-labelledby="reminders-title">
+        <h2 id="reminders-title">Напоминания о платежах</h2>
+        <p class="subtle">Скачай график обязательных платежей на ближайшие 12 месяцев и импортируй файл в календарь телефона. После изменения графика выгрузи актуальные даты заново.</p>
+        <form class="budget-inline" action="/api/budget/reminders.ics" method="get">
+          <label>Напомнить за, дней<input name="days" type="number" min="1" max="30" value="3" required></label>
+          <button class="button secondary" type="submit">Скачать календарь (.ics)</button>
+        </form>
+      </section>
       <section class="card budget-card budget-tool" aria-labelledby="actual-title">
         <h2 id="actual-title">План и факт</h2>
-        <p class="subtle">Введи фактические доходы и расходы за месяц. Платежи подтянутся из истории по дате записи. При первом сохранении трекер запомнит плановые суммы для сравнения.</p>
+        <p class="subtle">Введи фактические доходы и расходы за месяц. Платежи подтянутся из истории по дате оплаты. При первом сохранении трекер запомнит плановые суммы для сравнения.</p>
         <form id="actual-month-form" class="budget-inline">
           <label>Месяц<input id="actual-month" type="month" required></label>
           <button class="button secondary" type="submit">Открыть месяц</button>

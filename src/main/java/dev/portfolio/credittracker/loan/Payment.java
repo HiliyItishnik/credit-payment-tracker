@@ -5,6 +5,7 @@ import jakarta.persistence.*;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.UUID;
 
 @Entity
@@ -31,10 +32,11 @@ public class Payment {
     private BigDecimal balance;
     @Column(nullable = false)
     private Instant recordedAt;
+    private LocalDate paidOn;
 
     protected Payment() { }
 
-    public Payment(Loan loan, UUID requestId, int installmentNumber, Split split) {
+    public Payment(Loan loan, UUID requestId, int installmentNumber, Split split, LocalDate paidOn) {
         this.loan = loan;
         this.requestId = requestId;
         this.installmentNumber = installmentNumber;
@@ -44,6 +46,7 @@ public class Payment {
         this.principal = split.principal();
         this.balance = split.balance();
         this.recordedAt = Instant.now();
+        this.paidOn = paidOn;
     }
 
     public UUID getId() { return id; }
@@ -54,4 +57,7 @@ public class Payment {
     public BigDecimal getPrincipal() { return principal; }
     public BigDecimal getBalance() { return balance; }
     public Instant getRecordedAt() { return recordedAt; }
+    public LocalDate getPaidOn() {
+        return paidOn == null ? recordedAt.atZone(ZoneId.systemDefault()).toLocalDate() : paidOn;
+    }
 }

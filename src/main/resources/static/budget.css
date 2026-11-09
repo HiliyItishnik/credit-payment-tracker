@@ -23,8 +23,12 @@
 .budget-strategy{max-width:340px;margin:16px 0}
 .budget-forecast{margin:12px 0 0}
 .budget-entry input[type=number]{padding-inline:6px}
+.budget-one-off{grid-template-columns:minmax(0,1.3fr) minmax(90px,1fr) minmax(135px,1fr) minmax(110px,1fr) auto}
+.budget-one-off select{margin-top:6px}
 @media(max-width:740px){
   .budget-columns,.budget-totals{grid-template-columns:1fr}
   .budget-page{padding-inline:16px}
   .budget-card{padding:14px}
+  .budget-one-off{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .budget-one-off .budget-remove{justify-self:start}
 }

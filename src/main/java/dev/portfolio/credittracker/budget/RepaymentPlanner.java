@@ -9,18 +9,22 @@ import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 import static dev.portfolio.credittracker.domain.AmortizationCalculator.*;
 
 @Component
 public class RepaymentPlanner {
-    public record Debt(String name, Terms terms, BigDecimal balance, int completedPeriods, YearMonth lastPaidMonth) {}
+    public record Debt(UUID id, String name, Terms terms, BigDecimal balance, int completedPeriods, YearMonth lastPaidMonth) {}
+    public record Inputs(BigDecimal income, BigDecimal expenses, BigDecimal firstMonthAvailable,
+                         BigDecimal reserve, BigDecimal openingReserve, Map<YearMonth, BigDecimal> adjustments) {}
     public enum Strategy { HIGHEST_INTEREST, SMALLEST_BALANCE, MINIMUM_ONLY }
     public enum Status { COMPLETE, SHORTFALL, LIMIT, NO_DEBTS }
     public record Payment(String name, BigDecimal amount, BigDecimal extra, BigDecimal interest,
-                          BigDecimal balance, LocalDate date) {}
+                          BigDecimal balance, LocalDate date, UUID debtId, int installment) {}
     public record Month(YearMonth month, BigDecimal minimum, BigDecimal total, BigDecimal remaining,
-                        List<Payment> payments) {}
+                        List<Payment> payments, BigDecimal reserveBalance, BigDecimal reserveUsed) {}
     public record Shortfall(YearMonth month, BigDecimal required, BigDecimal missing) {}
     public record Plan(BigDecimal income, BigDecimal expenses, BigDecimal available, Status status,
                        YearMonth payoffMonth, BigDecimal interest, Shortfall shortfall, List<Month> months) {}
@@ -51,10 +55,11 @@ public class RepaymentPlanner {
         this.calculator = calculator;
     }
 
-    public Plan plan(List<Debt> debts, LocalDate today, BigDecimal income, BigDecimal expenses,
-                     BigDecimal firstMonthAvailable, Strategy strategy) {
+    public Plan plan(List<Debt> debts, LocalDate today, Inputs inputs, Strategy strategy) {
         YearMonth start = YearMonth.from(today);
+        BigDecimal income = inputs.income(), expenses = inputs.expenses();
         BigDecimal available = income.subtract(expenses);
+        BigDecimal held = inputs.openingReserve();
         var active = new ArrayList<>(debts.stream().filter(debt -> debt.balance().signum() > 0)
                 .map(debt -> new ActiveDebt(debt, start)).toList());
         var months = new ArrayList<Month>();
@@ -63,7 +68,9 @@ public class RepaymentPlanner {
 
         for (int offset = 0; offset < MAX_MONTHS; offset++) {
             YearMonth month = start.plusMonths(offset);
-            BigDecimal monthAvailable = offset == 0 ? firstMonthAvailable : available;
+            BigDecimal adjustment = inputs.adjustments().getOrDefault(month, ZERO);
+            BigDecimal monthAvailable = offset == 0 ? inputs.firstMonthAvailable() : available.add(adjustment);
+            BigDecimal cash = monthAvailable.add(held);
             var due = new ArrayList<Due>();
             BigDecimal minimum = ZERO;
             for (ActiveDebt debt : active) {
@@ -74,10 +81,11 @@ public class RepaymentPlanner {
                 due.add(new Due(debt, fee, required, maximum));
                 minimum = minimum.add(required);
             }
-            if (due.isEmpty()) continue;
-            if (strategy != Strategy.MINIMUM_ONLY && minimum.compareTo(monthAvailable) > 0) {
+            if (due.isEmpty() && (strategy == Strategy.MINIMUM_ONLY
+                    || inputs.reserve().signum() == 0 && adjustment.signum() == 0)) continue;
+            if (strategy != Strategy.MINIMUM_ONLY && minimum.compareTo(cash) > 0) {
                 return new Plan(income, expenses, available, Status.SHORTFALL, null, interest,
-                        new Shortfall(month, minimum, minimum.subtract(monthAvailable)), List.copyOf(months));
+                        new Shortfall(month, minimum, minimum.subtract(cash)), List.copyOf(months));
             }
 
             // Compare interest per ruble without dividing or rounding the ratio.
@@ -87,7 +95,9 @@ public class RepaymentPlanner {
                 due.sort((a, b) -> b.interest().multiply(a.debt().balance)
                         .compareTo(a.interest().multiply(b.debt().balance)));
             }
-            BigDecimal extra = strategy == Strategy.MINIMUM_ONLY ? ZERO : monthAvailable.subtract(minimum);
+            BigDecimal afterMinimum = cash.subtract(minimum);
+            BigDecimal extra = strategy == Strategy.MINIMUM_ONLY ? ZERO : afterMinimum.subtract(inputs.reserve()).max(ZERO);
+            BigDecimal reserveUsed = held.subtract(afterMinimum).max(ZERO);
             BigDecimal total = ZERO;
             var paid = new ArrayList<Payment>();
             for (Due payment : due) {
@@ -100,10 +110,13 @@ public class RepaymentPlanner {
                 interest = interest.add(payment.interest());
                 total = total.add(amount);
                 paid.add(new Payment(debt.debt.name(), amount, overpayment, payment.interest(), debt.balance,
-                        date(month, debt, today)));
+                        date(month, debt, today), debt.debt.id(), debt.periods));
             }
             active.removeIf(debt -> debt.balance.signum() == 0);
-            months.add(new Month(month, minimum, total, monthAvailable.subtract(total), List.copyOf(paid)));
+            BigDecimal remaining = cash.subtract(total);
+            held = remaining.max(ZERO).min(inputs.reserve());
+            months.add(new Month(month, minimum, total, remaining.subtract(held), List.copyOf(paid), held,
+                    strategy == Strategy.MINIMUM_ONLY ? ZERO : reserveUsed));
             if (active.isEmpty()) {
                 return new Plan(income, expenses, available, Status.COMPLETE, month, interest, null, List.copyOf(months));
             }

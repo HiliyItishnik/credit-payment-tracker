@@ -11,11 +11,13 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.OffsetDateTime;
 import java.time.YearMonth;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 import static dev.portfolio.credittracker.budget.BudgetController.*;
 import static dev.portfolio.credittracker.domain.AmortizationCalculator.ZERO;
@@ -46,6 +48,10 @@ public class BudgetService {
 
     @Transactional
     public Overview save(Budget budget) {
+        if (budget.openingReserve().compareTo(budget.reserve()) > 0) {
+            throw new CalculationException("Резерв на начало месяца не может превышать целевую сумму.");
+        }
+        for (var entry : budget.oneOffs()) validateMonth(YearMonth.from(entry.date()));
         jdbc.sql("""
                 INSERT INTO monthly_budget(id, entries) VALUES (1, CAST(:entries AS jsonb))
                 ON CONFLICT (id) DO UPDATE SET entries = EXCLUDED.entries
@@ -56,11 +62,13 @@ public class BudgetService {
     private Overview overview(Budget budget) {
         LocalDate today = LocalDate.now();
         var debts = activeDebts();
-        var totals = plannedTotals(budget);
-        BigDecimal available = totals.income().subtract(totals.expenses()).subtract(totalPaid(YearMonth.from(today)));
+        YearMonth month = YearMonth.from(today);
+        var totals = plannedTotals(budget, month);
+        BigDecimal available = totals.income().subtract(totals.expenses()).subtract(totalPaid(month));
+        var inputs = inputs(budget, available);
         return new Overview(budget,
-                planner.plan(debts, today, totals.income(), totals.expenses(), available, HIGHEST_INTEREST),
-                planner.plan(debts, today, totals.income(), totals.expenses(), available, SMALLEST_BALANCE));
+                planner.plan(debts, today, inputs, HIGHEST_INTEREST),
+                planner.plan(debts, today, inputs, SMALLEST_BALANCE));
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -76,8 +84,7 @@ public class BudgetService {
         }
         Budget budget = loadBudget();
         var events = new ArrayList<>(paidEvents(month));
-        var totals = plannedTotals(budget);
-        var plan = planner.plan(activeDebts(), today, totals.income(), totals.expenses(), ZERO, MINIMUM_ONLY);
+        var plan = minimumSchedule(today);
         for (var planned : plan.months()) {
             if (!planned.month().equals(month)) continue;
             for (var payment : planned.payments()) {
@@ -88,6 +95,19 @@ public class BudgetService {
         boolean incomplete = plan.status() == RepaymentPlanner.Status.LIMIT
                 && !month.isBefore(YearMonth.from(today).plusMonths(MAX_MONTHS));
         return CashCalendar.build(month, openingBalance, budget, events, incomplete);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public String reminders(int days) {
+        LocalDate today = LocalDate.now();
+        YearMonth end = YearMonth.from(today).plusMonths(12);
+        var payments = minimumSchedule(today).months().stream().takeWhile(month -> month.month().isBefore(end))
+                .flatMap(month -> month.payments().stream()).toList();
+        return ReminderCalendar.build(payments, days);
+    }
+
+    private RepaymentPlanner.Plan minimumSchedule(LocalDate today) {
+        return planner.plan(activeDebts(), today, new RepaymentPlanner.Inputs(ZERO, ZERO, ZERO, ZERO, ZERO, Map.of()), MINIMUM_ONLY);
     }
 
     private record SavedMonth(Actual actual, Totals planned) {}
@@ -111,11 +131,13 @@ public class BudgetService {
                 .param("month", month.atDay(1))
                 .query((rs, row) -> new SavedMonth(json.readValue(rs.getString(1), Actual.class),
                         json.readValue(rs.getString(2), Totals.class))).optional();
-        var totals = plannedTotals(loadBudget());
+        Budget budget = loadBudget();
+        var totals = plannedTotals(budget, month);
         BigDecimal paid = totalPaid(month);
         boolean currentMonth = month.equals(current);
         var debts = currentMonth ? activeDebts() : List.<RepaymentPlanner.Debt>of();
-        var baseline = currentMonth ? baseline(totals, today, debts, paid) : null;
+        var baseline = currentMonth ? planner.plan(debts, today,
+                inputs(budget, totals.income().subtract(totals.expenses()).subtract(paid)), HIGHEST_INTEREST) : null;
         Totals planned = saved.map(SavedMonth::planned).orElseGet(() -> new Totals(totals.income(), totals.expenses(),
                 currentMonth ? scheduledThisMonth(baseline, current).add(paid) : null));
         Actual actual = submitted == null ? saved.map(SavedMonth::actual).orElse(null) : submitted;
@@ -134,14 +156,19 @@ public class BudgetService {
         Forecast adjusted = null;
         if (currentMonth && actual != null) {
             BigDecimal remaining = actual.income().subtract(actual.expenses()).subtract(paid);
-            adjusted = new Forecast(planner.plan(debts, today, totals.income(), totals.expenses(), remaining, HIGHEST_INTEREST));
+            adjusted = new Forecast(planner.plan(debts, today, inputs(budget, remaining), HIGHEST_INTEREST));
         }
         return new MonthReview(month, planned, actual, paid, currentMonth ? new Forecast(baseline) : null, adjusted);
     }
 
-    private RepaymentPlanner.Plan baseline(Totals totals, LocalDate today, List<RepaymentPlanner.Debt> debts, BigDecimal paid) {
-        return planner.plan(debts, today, totals.income(), totals.expenses(),
-                totals.income().subtract(totals.expenses()).subtract(paid), HIGHEST_INTEREST);
+    private RepaymentPlanner.Inputs inputs(Budget budget, BigDecimal firstMonthAvailable) {
+        var adjustments = new HashMap<YearMonth, BigDecimal>();
+        for (var entry : budget.oneOffs()) {
+            var amount = entry.direction() == Direction.INCOME ? entry.amount() : entry.amount().negate();
+            adjustments.merge(YearMonth.from(entry.date()), amount, BigDecimal::add);
+        }
+        return new RepaymentPlanner.Inputs(total(budget.incomes()), total(budget.expenses()), firstMonthAvailable,
+                budget.reserve(), budget.openingReserve(), adjustments);
     }
 
     private BigDecimal scheduledThisMonth(RepaymentPlanner.Plan plan, YearMonth month) {
@@ -151,12 +178,19 @@ public class BudgetService {
     }
 
     private List<RepaymentPlanner.Debt> activeDebts() {
+        var lastPaidDates = new HashMap<UUID, YearMonth>();
+        jdbc.sql("""
+                SELECT loan_id, MAX(COALESCE(paid_on, CAST(recorded_at AT TIME ZONE :zone AS date)))
+                FROM payments GROUP BY loan_id
+                """).param("zone", ZoneId.systemDefault().getId())
+                .query((rs, row) -> Map.entry(rs.getObject(1, UUID.class), YearMonth.from(rs.getObject(2, LocalDate.class))))
+                .list().forEach(entry -> lastPaidDates.put(entry.getKey(), entry.getValue()));
         return loans.findAllByOrderByCreatedAtAsc().stream().map(loan -> {
             var last = payments.findFirstByLoanIdOrderByInstallmentNumberDesc(loan.getId());
-            return new RepaymentPlanner.Debt(loan.getName(), loan.terms(),
+            return new RepaymentPlanner.Debt(loan.getId(), loan.getName(), loan.terms(),
                     last.map(payment -> payment.getBalance()).orElse(loan.getPrincipal()),
                     last.map(payment -> payment.getInstallmentNumber()).orElse(0),
-                    last.map(payment -> YearMonth.from(payment.getRecordedAt().atZone(ZoneId.systemDefault()))).orElse(null));
+                    lastPaidDates.get(loan.getId()));
         }).toList();
     }
 
@@ -165,17 +199,20 @@ public class BudgetService {
     }
 
     private List<CashCalendar.Event> paidEvents(YearMonth month) {
-        ZoneId zone = ZoneId.systemDefault();
         return jdbc.sql("""
-                SELECT p.recorded_at, p.amount, l.name FROM payments p
-                JOIN loans l ON l.id = p.loan_id
-                WHERE p.recorded_at >= :start AND p.recorded_at < :end
-                ORDER BY p.recorded_at
+                SELECT pay_date, amount, name FROM (
+                    SELECT COALESCE(p.paid_on, CAST(p.recorded_at AT TIME ZONE :zone AS date)) AS pay_date,
+                           p.amount, l.name, p.recorded_at
+                    FROM payments p JOIN loans l ON l.id = p.loan_id
+                ) events
+                WHERE pay_date >= :start AND pay_date < :end
+                ORDER BY pay_date, recorded_at
                 """)
-                .param("start", month.atDay(1).atStartOfDay(zone).toOffsetDateTime())
-                .param("end", month.plusMonths(1).atDay(1).atStartOfDay(zone).toOffsetDateTime())
+                .param("zone", ZoneId.systemDefault().getId())
+                .param("start", month.atDay(1))
+                .param("end", month.plusMonths(1).atDay(1))
                 .query((rs, row) -> new CashCalendar.Event(
-                        rs.getObject(1, OffsetDateTime.class).atZoneSameInstant(zone).toLocalDate(),
+                        rs.getObject(1, LocalDate.class),
                         CashCalendar.Kind.RECORDED_PAYMENT, rs.getString(3), rs.getBigDecimal(2))).list();
     }
 
@@ -188,11 +225,17 @@ public class BudgetService {
     private Budget loadBudget() {
         return jdbc.sql("SELECT entries::text FROM monthly_budget WHERE id = 1")
                 .query(String.class).optional().map(value -> json.readValue(value, Budget.class))
-                .orElseGet(() -> new Budget(List.of(), List.of()));
+                .orElseGet(() -> new Budget(List.of(), List.of(), List.of(), ZERO, ZERO));
     }
 
-    private Totals plannedTotals(Budget budget) {
-        return new Totals(total(budget.incomes()), total(budget.expenses()), null);
+    private Totals plannedTotals(Budget budget, YearMonth month) {
+        BigDecimal income = total(budget.incomes()), expenses = total(budget.expenses());
+        for (var entry : budget.oneOffs()) {
+            if (!YearMonth.from(entry.date()).equals(month)) continue;
+            if (entry.direction() == Direction.INCOME) income = income.add(entry.amount());
+            else expenses = expenses.add(entry.amount());
+        }
+        return new Totals(income, expenses, null);
     }
 
     private BigDecimal total(List<Entry> entries) {

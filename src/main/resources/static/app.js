@@ -2,6 +2,7 @@
 const $ = (id) => document.getElementById(id);
 const money = (value) => new Intl.NumberFormat('ru-RU', {style: 'currency', currency: 'RUB', maximumFractionDigits: 2}).format(value);
 const date = (value) => value ? new Intl.DateTimeFormat('ru-RU', {day: 'numeric', month: 'short', year: 'numeric'}).format(new Date(value + 'T12:00:00')) : '—';
+const todayInput = () => new Intl.DateTimeFormat('sv-SE').format(new Date());
 const state = {id: null, loan: null, forecast: null, forecastError: null, generation: 0, busy: false, tab: 'schedule', attempt: null};
 const debtNames = {LOAN: 'Кредит', CREDIT_CARD: 'Кредитная карта', MICROLOAN: 'Микрозайм'};
 const fieldNames = {name: 'Название', principal: 'Сумма долга', annualRate: 'Годовая ставка', monthlyPayment: 'Плановый платёж', firstPaymentDate: 'Дата первого платежа', amount: 'Сумма платежа', requestId: 'Идентификатор запроса', debtType: 'Тип долга', creditLimit: 'Кредитный лимит', dailyRate: 'Дневная ставка', interestStartDate: 'Начало начисления процентов'};
@@ -151,15 +152,17 @@ function renderTable(id, rows, history) {
   wrap.setAttribute('role', 'region'); wrap.setAttribute('aria-label', history ? 'История платежей' : 'График платежей');
   const table = document.createElement('table');
   const head = table.createTHead().insertRow();
-  ['№', 'Расчётная дата', 'Платёж', 'Проценты', 'Основной долг', 'Остаток'].forEach(label => {
+  const dateColumns = history ? ['По графику', 'Дата оплаты'] : ['Расчётная дата'];
+  ['№', ...dateColumns, 'Платёж', 'Проценты', 'Основной долг', 'Остаток'].forEach(label => {
     const th = document.createElement('th'); th.scope = 'col'; th.textContent = label; head.append(th);
   });
   const body = table.createTBody();
   rows.forEach(row => {
     const tr = body.insertRow();
-    [row.number, date(row.date), money(history ? row.amount : row.payment), money(row.interest), money(row.principal), money(row.balance)]
+    const dates = history ? [date(row.date), date(row.paidOn)] : [date(row.date)];
+    [row.number, ...dates, money(history ? row.amount : row.payment), money(row.interest), money(row.principal), money(row.balance)]
       .forEach(value => { tr.insertCell().textContent = value; });
-    if (history) tr.cells[1].title = 'Запись создана: ' + new Date(row.recordedAt).toLocaleString('ru-RU');
+    if (history) tr.cells[2].title = 'Запись создана: ' + new Date(row.recordedAt).toLocaleString('ru-RU');
   });
   wrap.append(table); container.append(wrap);
 }
@@ -279,14 +282,19 @@ $('create-form').addEventListener('submit', async event => {
   finally { setBusy(false); }
 });
 
+$('payment-date').max = todayInput();
 $('payment-form').addEventListener('submit', async event => {
   event.preventDefault(); if (state.busy) return; clearError('payment-error'); setBusy(true);
   try {
     const id = state.id, amount = decimal($('payment-amount').value);
+    const paidOn = $('payment-date').value || null;
     // Retain a request ID after a network error, so a retry cannot add the same payment twice.
-    if (!state.attempt || state.attempt.id !== id || state.attempt.amount !== amount) state.attempt = {id, amount, requestId: crypto.randomUUID()};
-    await api('/' + id + '/payments', {method: 'POST', body: JSON.stringify({requestId: state.attempt.requestId, amount})});
+    if (!state.attempt || state.attempt.id !== id || state.attempt.amount !== amount || state.attempt.paidOn !== paidOn) {
+      state.attempt = {id, amount, paidOn, requestId: crypto.randomUUID()};
+    }
+    await api('/' + id + '/payments', {method: 'POST', body: JSON.stringify({requestId: state.attempt.requestId, amount, paidOn})});
     state.attempt = null;
+    $('payment-date').value = '';
     try { await refresh(id); } catch (error) { showError('global-error', new Error('Платёж сохранён. ' + error.message)); $('loading').hidden = true; }
   } catch (error) { showError('payment-error', error); }
   finally { setBusy(false); }

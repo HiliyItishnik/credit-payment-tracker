@@ -30,11 +30,14 @@ public final class LoanDtos {
 
     public record RecordPayment(
             @NotNull UUID requestId,
-            @NotNull @DecimalMin("0.01") @DecimalMax("1000000000") @Digits(integer = 10, fraction = 2) BigDecimal amount) { }
+            @NotNull @DecimalMin("0.01") @DecimalMax("1000000000") @Digits(integer = 10, fraction = 2) BigDecimal amount,
+            @PastOrPresent LocalDate paidOn) {
+        public RecordPayment(UUID requestId, BigDecimal amount) { this(requestId, amount, null); }
+    }
     public record LoanSummary(UUID id, String name, BigDecimal principal, BigDecimal balance, BigDecimal annualRate,
                               DebtType debtType) { }
     public record PaymentView(UUID id, int number, LocalDate date, BigDecimal amount, BigDecimal interest,
-                              BigDecimal principal, BigDecimal balance, Instant recordedAt) { }
+                              BigDecimal principal, BigDecimal balance, Instant recordedAt, LocalDate paidOn) { }
     public record LoanDetail(UUID id, String name, BigDecimal principal, BigDecimal annualRate,
                              BigDecimal monthlyPayment, LocalDate firstPaymentDate, BigDecimal balance,
                              BigDecimal principalPaid, BigDecimal interestPaid, BigDecimal totalPaid,
