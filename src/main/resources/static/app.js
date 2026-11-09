@@ -2,8 +2,9 @@
 const $ = (id) => document.getElementById(id);
 const money = (value) => new Intl.NumberFormat('ru-RU', {style: 'currency', currency: 'RUB', maximumFractionDigits: 2}).format(value);
 const date = (value) => value ? new Intl.DateTimeFormat('ru-RU', {day: 'numeric', month: 'short', year: 'numeric'}).format(new Date(value + 'T12:00:00')) : '—';
-const state = {id: null, loan: null, forecast: null, generation: 0, busy: false, tab: 'schedule', attempt: null};
-const fieldNames = {name: 'Название', principal: 'Сумма кредита', annualRate: 'Годовая ставка', monthlyPayment: 'Платёж в месяц', firstPaymentDate: 'Дата первого платежа', amount: 'Сумма платежа', requestId: 'Идентификатор запроса'};
+const state = {id: null, loan: null, forecast: null, forecastError: null, generation: 0, busy: false, tab: 'schedule', attempt: null};
+const debtNames = {LOAN: 'Кредит', CREDIT_CARD: 'Кредитная карта', MICROLOAN: 'Микрозайм'};
+const fieldNames = {name: 'Название', principal: 'Сумма долга', annualRate: 'Годовая ставка', monthlyPayment: 'Плановый платёж', firstPaymentDate: 'Дата первого платежа', amount: 'Сумма платежа', requestId: 'Идентификатор запроса', debtType: 'Тип долга', creditLimit: 'Кредитный лимит', dailyRate: 'Дневная ставка', interestStartDate: 'Начало начисления процентов'};
 
 async function api(path, options = {}) {
   let response;
@@ -13,7 +14,9 @@ async function api(path, options = {}) {
     const error = await response.json().catch(() => ({}));
     let message = error.detail || 'Не удалось выполнить запрос. Попробуй обновить страницу.';
     if (error.errors) message += ' Поля: ' + Object.keys(error.errors).map(key => fieldNames[key] || key).join(', ') + '.';
-    throw new Error(message);
+    const failure = new Error(message);
+    failure.status = response.status;
+    throw failure;
   }
   return response.status === 204 ? null : response.json();
 }
@@ -23,6 +26,7 @@ function clearError(id) { $(id).hidden = true; $(id).textContent = ''; }
 function setBusy(busy) {
   state.busy = busy;
   document.querySelectorAll('.mutating, .loan-nav, .open-create, #fill-example').forEach(el => { el.disabled = busy; });
+  $('forecast-submit').disabled = busy || Boolean(state.forecastError);
 }
 function decimal(value, allowZero = false, fraction = 2) {
   const normalized = value.trim().replace(',', '.');
@@ -46,11 +50,13 @@ async function refresh(preferredId = state.id) {
     button.type = 'button'; button.className = 'loan-nav'; button.dataset.id = loan.id;
     const name = document.createElement('strong'); name.textContent = loan.name;
     const balance = document.createElement('small'); balance.textContent = Number(loan.balance) === 0 ? 'Погашен ✓' : money(loan.balance);
-    button.append(name, balance); button.disabled = state.busy;
+    const type = document.createElement('small'); type.textContent = debtNames[loan.debtType] || debtNames.LOAN;
+    button.append(name, type, balance); button.disabled = state.busy;
     button.addEventListener('click', () => selectLoan(loan.id));
     nav.append(button);
   }
   if (!loans.length) {
+    state.id = null; state.loan = null; state.forecast = null; state.forecastError = null;
     $('loading').hidden = true; $('empty').hidden = false; $('workspace').hidden = true;
     return;
   }
@@ -62,9 +68,15 @@ async function loadLoan(id) {
   const generation = ++state.generation;
   state.id = id;
   $('workspace').hidden = true; $('empty').hidden = true; $('loading').hidden = false;
-  const [loan, forecast] = await Promise.all([api('/' + id), api('/' + id + '/forecast')]);
+  let forecastError = null;
+  const [loan, forecast] = await Promise.all([api('/' + id), api('/' + id + '/forecast').catch(error => {
+    if (error.status !== 422) throw error;
+    forecastError = error;
+    return null;
+  })]);
   if (generation !== state.generation) return;
   state.loan = loan; state.forecast = forecast;
+  state.forecastError = forecastError;
   $('extra-monthly').value = '0'; $('one-time-extra').value = '0';
   ['global-error', 'payment-error', 'forecast-error', 'history-error'].forEach(clearError);
   document.querySelectorAll('.loan-nav').forEach(button => {
@@ -85,8 +97,16 @@ async function selectLoan(id) {
 function render() {
   const loan = state.loan;
   $('loan-name').textContent = loan.name;
-  $('loan-terms').textContent = Number(loan.annualRate).toLocaleString('ru-RU', {maximumFractionDigits: 4}) + '% годовых · ' + money(loan.monthlyPayment) + ' в месяц';
-  $('loan-status').textContent = loan.paidOff ? 'Погашен ✓' : 'Активный кредит';
+  const microloan = loan.debtType === 'MICROLOAN';
+  const rate = Number(microloan ? loan.dailyRate : loan.annualRate).toLocaleString('ru-RU', {maximumFractionDigits: 4});
+  $('loan-terms').textContent = (debtNames[loan.debtType] || debtNames.LOAN) + ' · ' + rate + (microloan ? '% в день' : '% годовых') + ' · плановый платёж ' + money(loan.monthlyPayment);
+  $('loan-status').textContent = loan.paidOff ? 'Погашен ✓' : 'Активный долг';
+  $('card-info').hidden = loan.debtType !== 'CREDIT_CARD';
+  $('card-info').textContent = loan.debtType === 'CREDIT_CARD' ? 'Лимит: ' + money(loan.creditLimit) + ' · Свободно: ' + money(loan.availableCredit) : '';
+  $('debt-model-note').textContent = microloan
+    ? 'Проценты по дневной ставке за дни между расчётными датами. Первый период — от ' + date(loan.interestStartDate) + '. После первого платежа график ежемесячный; штрафы и лимиты начислений не моделируются.'
+    : loan.debtType === 'CREDIT_CARD' ? 'Прогноз погашения текущего долга фиксированным платежом. Новые покупки, льготный период и банковский минимальный платёж не моделируются.'
+    : 'Постоянная годовая ставка и фиксированный ежемесячный платёж.';
   $('balance').textContent = money(loan.balance);
   $('principal-paid').textContent = money(loan.principalPaid);
   $('interest-paid').textContent = money(loan.interestPaid);
@@ -94,17 +114,29 @@ function render() {
   const percent = Math.min(100, Number(loan.principalPaid) / Number(loan.principal) * 100);
   $('progress').style.width = percent + '%';
   $('progress-text').textContent = 'Погашено ' + percent.toLocaleString('ru-RU', {maximumFractionDigits: 1}) + '%';
-  $('months-left').textContent = state.forecast.baseline.months + ' мес.';
-  $('payoff-date').textContent = (loan.paidOff ? 'Закрыт ' : 'По графику — ') + date(state.forecast.baseline.payoffDate);
+  const baseline = state.forecast?.baseline;
+  $('months-left').textContent = baseline ? baseline.months + (microloan ? ' плат.' : ' мес.') : '—';
+  $('payoff-date').textContent = baseline ? (loan.paidOff ? 'Закрыт ' : 'По графику — ') + date(baseline.payoffDate) : 'Нет графика';
   $('payment-form').hidden = loan.paidOff; $('paid-off-message').hidden = !loan.paidOff;
   $('payment-period').textContent = loan.paidOff ? 'Цель достигнута' : 'Расчётная дата: ' + date(loan.nextPaymentDate);
-  $('payment-amount').value = Number(loan.suggestedPayment).toFixed(2);
-  $('payment-hint').textContent = 'Проценты за месяц: ' + money(loan.nextInterest) + '. Полное погашение: ' + money(loan.maximumPayment) + '.';
+  $('payment-amount').value = Math.max(Number(loan.suggestedPayment), Number(loan.nextInterest)).toFixed(2);
+  $('payment-hint').textContent = 'Проценты за период: ' + money(loan.nextInterest) + '. Полное погашение на расчётную дату: ' + money(loan.maximumPayment) + '.';
   $('history-count').textContent = loan.payments.length;
   $('undo-payment').hidden = loan.payments.length === 0;
-  $('future-interest').textContent = 'Будущие проценты: ' + money(state.forecast.baseline.totalInterest);
-  renderTable('schedule-table', state.forecast.baseline.rows, false);
   renderTable('history-table', loan.payments, true);
+  if (!baseline) {
+    const message = state.forecastError.message;
+    $('future-interest').textContent = 'График недоступен';
+    $('schedule-table').textContent = message;
+    $('chart').textContent = message;
+    $('scenario-legend').hidden = true;
+    $('interest-saved').textContent = $('months-saved').textContent = $('scenario-date').textContent = '—';
+    $('scenario-table').textContent = message;
+    showError('forecast-error', state.forecastError);
+    return;
+  }
+  $('future-interest').textContent = 'Будущие проценты: ' + money(baseline.totalInterest);
+  renderTable('schedule-table', baseline.rows, false);
   renderForecast();
 }
 
@@ -135,7 +167,7 @@ function renderTable(id, rows, history) {
 function renderForecast() {
   const forecast = state.forecast;
   $('interest-saved').textContent = money(forecast.interestSaved);
-  $('months-saved').textContent = forecast.monthsSaved + ' мес.';
+  $('months-saved').textContent = forecast.monthsSaved + (state.loan.debtType === 'MICROLOAN' ? ' плат.' : ' мес.');
   $('scenario-date').textContent = date(forecast.scenario.payoffDate);
   renderTable('scenario-table', forecast.scenario.rows, false);
   renderChart();
@@ -172,7 +204,7 @@ function renderChart() {
   svg.append(element('polyline', {points: basePoints.map(p => p.join(',')).join(' '), fill: 'none', stroke: '#4c7348', 'stroke-width': 2.5, 'stroke-linejoin': 'round'}));
   if (hasScenario) svg.append(element('polyline', {points: points(scenario.rows).map(p => p.join(',')).join(' '), fill: 'none', stroke: '#d98b54', 'stroke-width': 2.5, 'stroke-linejoin': 'round'}));
   svg.append(element('text', {x: left, y: 211, fill: '#8c9884', 'font-size': 10}, 'Сейчас'));
-  svg.append(element('text', {x: right, y: 211, 'text-anchor': 'end', fill: '#8c9884', 'font-size': 10}, baseline.months + ' мес.'));
+  svg.append(element('text', {x: right, y: 211, 'text-anchor': 'end', fill: '#8c9884', 'font-size': 10}, baseline.months + (state.loan.debtType === 'MICROLOAN' ? ' плат.' : ' мес.')));
   container.append(svg);
 }
 
@@ -193,13 +225,40 @@ document.querySelectorAll('[role=tab]').forEach((button, index, tabs) => {
 });
 
 document.querySelectorAll('.open-create').forEach(button => button.addEventListener('click', () => {
-  clearError('create-error'); $('create-dialog').showModal(); $('new-name').focus();
+  clearError('create-error'); updateDebtForm(); $('create-dialog').showModal(); $('new-name').focus();
 }));
+function updateDebtForm() {
+  const type = $('new-type').value || 'LOAN';
+  const card = type === 'CREDIT_CARD', micro = type === 'MICROLOAN';
+  $('new-limit-field').hidden = !card; $('new-limit').required = card; $('new-limit').disabled = !card;
+  $('new-start-field').hidden = !micro; $('new-start').required = micro; $('new-start').disabled = !micro;
+  $('new-principal-label').textContent = card ? 'Текущий основной долг по карте, ₽' : 'Начальная сумма долга, ₽';
+  $('new-rate-label').textContent = micro ? 'Дневная ставка, %' : 'Годовая ставка, %';
+  $('new-payment-label').textContent = micro ? 'Плановый платёж, ₽' : 'Платёж в месяц, ₽';
+  $('new-date-label').textContent = micro ? 'Дата первого платежа / возврата' : 'Дата первого платежа';
+  $('new-type-hint').textContent = micro
+    ? 'Введи дневную ставку из договора. Для погашения одним платежом укажи сумму долга с процентами. Если долг останется, прогноз продолжится ежемесячно. Штрафы и ограничения начислений не учитываются.'
+    : card ? 'Укажи текущий основной долг без начисленных процентов и платёж, который планируешь вносить каждый месяц. Расчёт без новых покупок и льготного периода.'
+    : 'Фиксированный ежемесячный платёж и постоянная годовая ставка.';
+}
+$('new-type').addEventListener('change', updateDebtForm);
 $('close-dialog').addEventListener('click', () => { if (!state.busy) $('create-dialog').close(); });
 $('create-dialog').addEventListener('cancel', event => { if (state.busy) event.preventDefault(); });
 $('fill-example').addEventListener('click', () => {
-  $('new-name').value = 'Кредит на ремонт'; $('new-principal').value = '300000';
-  $('new-rate').value = '18'; $('new-monthly').value = '15000';
+  const type = $('new-type').value || 'LOAN';
+  const micro = type === 'MICROLOAN', card = type === 'CREDIT_CARD';
+  $('new-name').value = micro ? 'Микрозайм' : card ? 'Моя кредитная карта' : 'Кредит на ремонт';
+  $('new-principal').value = micro ? '10000' : card ? '50000' : '300000';
+  $('new-rate').value = micro ? '0.8' : card ? '36' : '18';
+  $('new-monthly').value = micro ? '12400' : card ? '5000' : '15000';
+  $('new-limit').value = '100000';
+  const today = new Date();
+  const inputDate = value => value.getFullYear() + '-' + String(value.getMonth() + 1).padStart(2, '0') + '-' + String(value.getDate()).padStart(2, '0');
+  $('new-start').value = inputDate(today);
+  if (micro) {
+    const due = new Date(today); due.setDate(due.getDate() + 30); $('new-date').value = inputDate(due);
+    updateDebtForm(); return;
+  }
   const next = new Date(); next.setDate(1); next.setMonth(next.getMonth() + 1);
   $('new-date').value = next.getFullYear() + '-' + String(next.getMonth() + 1).padStart(2, '0') + '-01';
 });
@@ -207,10 +266,15 @@ $('fill-example').addEventListener('click', () => {
 $('create-form').addEventListener('submit', async event => {
   event.preventDefault(); if (state.busy) return; clearError('create-error'); setBusy(true);
   try {
-    const body = {name: $('new-name').value.trim(), principal: decimal($('new-principal').value), annualRate: decimal($('new-rate').value, true, 4), monthlyPayment: decimal($('new-monthly').value), firstPaymentDate: $('new-date').value};
+    const type = $('new-type').value || 'LOAN';
+    const body = {debtType: type, name: $('new-name').value.trim(), principal: decimal($('new-principal').value), monthlyPayment: decimal($('new-monthly').value), firstPaymentDate: $('new-date').value};
+    if (type === 'MICROLOAN') {
+      body.dailyRate = decimal($('new-rate').value, true, 4); body.interestStartDate = $('new-start').value;
+    } else body.annualRate = decimal($('new-rate').value, true, 4);
+    if (type === 'CREDIT_CARD') body.creditLimit = decimal($('new-limit').value);
     const loan = await api('', {method: 'POST', body: JSON.stringify(body)});
-    $('create-dialog').close(); $('create-form').reset(); activateTab('schedule');
-    try { await refresh(loan.id); } catch (error) { showError('global-error', new Error('Кредит создан. ' + error.message)); $('loading').hidden = true; }
+    $('create-dialog').close(); $('create-form').reset(); updateDebtForm(); activateTab('schedule');
+    try { await refresh(loan.id); } catch (error) { showError('global-error', new Error('Долг добавлен. ' + error.message)); $('loading').hidden = true; }
   } catch (error) { showError('create-error', error); }
   finally { setBusy(false); }
 });
@@ -229,7 +293,7 @@ $('payment-form').addEventListener('submit', async event => {
 });
 
 $('forecast-form').addEventListener('submit', async event => {
-  event.preventDefault(); if (state.busy) return; clearError('forecast-error'); setBusy(true);
+  event.preventDefault(); if (state.busy || state.forecastError) return; clearError('forecast-error'); setBusy(true);
   try {
     const params = new URLSearchParams({extraMonthly: decimal($('extra-monthly').value, true), oneTimeExtra: decimal($('one-time-extra').value, true)});
     const generation = state.generation;
@@ -249,6 +313,20 @@ $('undo-payment').addEventListener('click', async () => {
     state.attempt = null;
     try { await refresh(id); } catch (error) { showError('global-error', new Error('Платёж отменён. ' + error.message)); $('loading').hidden = true; }
   } catch (error) { showError('history-error', error); }
+  finally { setBusy(false); }
+});
+
+$('delete-loan').addEventListener('click', async () => {
+  if (state.busy || !state.loan) return;
+  const {id, name} = state.loan;
+  if (!confirm('Удалить «' + name + '» и всю его историю платежей? Восстановить запись нельзя.')) return;
+  clearError('global-error'); setBusy(true);
+  try {
+    await api('/' + id, {method: 'DELETE'});
+    if (state.attempt?.id === id) state.attempt = null;
+    try { await refresh(); }
+    catch (error) { showError('global-error', new Error('Долг удалён. ' + error.message)); $('loading').hidden = true; }
+  } catch (error) { showError('global-error', error); }
   finally { setBusy(false); }
 });
 

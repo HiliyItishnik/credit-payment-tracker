@@ -53,3 +53,40 @@ test('failed refresh after a saved payment hides the stale payment form', async 
   assert.equal(page.element('workspace').hidden, true);
   assert.match(page.element('global-error').textContent, /Платёж сохранён/);
 });
+
+test('debt details stay visible when the recorded payment leaves no valid forecast', async () => {
+  const loan = {id: 'micro-1', debtType: 'MICROLOAN'};
+  const page = browser(async url => url.endsWith('/forecast')
+    ? {ok: false, status: 422, json: async () => ({detail: 'Платёж меньше процентов'})}
+    : {ok: true, status: 200, json: async () => loan});
+  await vm.runInContext("render = () => {}; selectLoan('micro-1')", page.context);
+  assert.equal(vm.runInContext('state.loan.id', page.context), loan.id);
+  assert.equal(page.element('workspace').hidden, false);
+  assert.equal(page.element('forecast-submit').disabled, true);
+});
+
+for (const type of ['LOAN', 'CREDIT_CARD', 'MICROLOAN']) {
+  test('creation form sends only relevant fields for ' + type, async () => {
+    let body;
+    const page = browser(async (url, options) => {
+      body = JSON.parse(options.body);
+      throw new Error('Stop after inspecting request');
+    });
+    page.element('new-type').value = type;
+    page.element('new-type').listeners.change();
+    assert.equal(page.element('new-limit').required, type === 'CREDIT_CARD');
+    assert.equal(page.element('new-limit').disabled, type !== 'CREDIT_CARD');
+    assert.equal(page.element('new-start').required, type === 'MICROLOAN');
+    assert.equal(page.element('new-start').disabled, type !== 'MICROLOAN');
+    for (const [id, value] of Object.entries({'new-name': 'Test debt', 'new-principal': '10000',
+      'new-rate': '0,8', 'new-monthly': '12400', 'new-date': '2026-02-01',
+      'new-start': '2026-01-02', 'new-limit': '50000'})) page.element(id).value = value;
+    await page.element('create-form').listeners.submit({preventDefault() {}});
+    assert.equal(body.debtType, type);
+    assert.equal(body.principal, '10000.00');
+    assert.equal(body.dailyRate, type === 'MICROLOAN' ? '0.8000' : undefined);
+    assert.equal(body.annualRate, type === 'MICROLOAN' ? undefined : '0.8000');
+    assert.equal(body.creditLimit, type === 'CREDIT_CARD' ? '50000.00' : undefined);
+    assert.equal(body.interestStartDate, type === 'MICROLOAN' ? '2026-01-02' : undefined);
+  });
+}

@@ -33,6 +33,64 @@ class LoanApiIT {
             {"name":"Кредит на ремонт","principal":100000.00,"annualRate":12,
              "monthlyPayment":10000.00,"firstPaymentDate":"2026-01-31"}
             """;
+    private static final String CARD = """
+            {"debtType":"CREDIT_CARD","name":"Карта","principal":50000,"creditLimit":100000,
+             "annualRate":36,"monthlyPayment":5000,"firstPaymentDate":"2026-01-31"}
+            """;
+    private static final String MICROLOAN = """
+            {"debtType":"MICROLOAN","name":"Микрозайм","principal":10000,"dailyRate":0.8,
+             "interestStartDate":"2026-01-02","monthlyPayment":12400,"firstPaymentDate":"2026-02-01"}
+            """;
+
+    private String createDebt(String body) throws Exception {
+        return JsonPath.read(mvc.perform(post("/api/loans").contentType(APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "$.id");
+    }
+
+    @Test void defaultsLegacyRequestsToLoanType() throws Exception {
+        String id = createLoan();
+        mvc.perform(get("/api/loans/" + id)).andExpect(jsonPath("$.debtType").value("LOAN"));
+        assertEquals("LOAN", jdbc.queryForObject("select debt_type from loans", String.class));
+    }
+
+    @Test void cardLimitIsPersistedAndAvailableCreditRestoredAfterPayment() throws Exception {
+        String id = createDebt(CARD);
+        mvc.perform(get("/api/loans/" + id)).andExpect(jsonPath("$.creditLimit").value(100000))
+                .andExpect(jsonPath("$.availableCredit").value(50000)).andExpect(jsonPath("$.debtType").value("CREDIT_CARD"));
+        String payment = savedPayment(id, "5000");
+        mvc.perform(get("/api/loans/" + id)).andExpect(jsonPath("$.balance").value(46500))
+                .andExpect(jsonPath("$.availableCredit").value(53500));
+        mvc.perform(delete("/api/loans/" + id + "/payments/" + payment)).andExpect(status().isNoContent());
+        mvc.perform(get("/api/loans/" + id)).andExpect(jsonPath("$.availableCredit").value(50000));
+        mvc.perform(get("/api/loans")).andExpect(jsonPath("$[0].debtType").value("CREDIT_CARD"));
+    }
+
+    @Test void microloanUsesDailyRateInForecastPaymentAndUndo() throws Exception {
+        String id = createDebt(MICROLOAN);
+        mvc.perform(get("/api/loans/" + id)).andExpect(jsonPath("$.nextInterest").value(2400))
+                .andExpect(jsonPath("$.maximumPayment").value(12400)).andExpect(jsonPath("$.dailyRate").value(0.8));
+        mvc.perform(get("/api/loans/" + id + "/forecast")).andExpect(jsonPath("$.baseline.totalInterest").value(2400))
+                .andExpect(jsonPath("$.baseline.months").value(1));
+        String payment = savedPayment(id, "12400");
+        mvc.perform(get("/api/loans/" + id)).andExpect(jsonPath("$.paidOff").value(true));
+        mvc.perform(delete("/api/loans/" + id + "/payments/" + payment)).andExpect(status().isNoContent());
+        mvc.perform(get("/api/loans/" + id)).andExpect(jsonPath("$.nextInterest").value(2400));
+        assertEquals(0, new BigDecimal("0.8").compareTo(jdbc.queryForObject("select daily_rate from loans", BigDecimal.class)));
+    }
+
+    @Test void rejectsMissingOrInconsistentTypeSpecificFields() throws Exception {
+        for (String body : new String[]{CARD.replace("100000", "40000"), CARD.replace("\"creditLimit\":100000,", ""),
+                MICROLOAN.replace("\"dailyRate\":0.8,", ""), MICROLOAN.replace("2026-01-02", "2026-02-01"),
+                LOAN.replace("\"annualRate\":12,", ""), MICROLOAN.replace("\"dailyRate\":0.8,", "\"dailyRate\":0.8,\"annualRate\":12,")}) {
+            mvc.perform(post("/api/loans").contentType(APPLICATION_JSON).content(body))
+                    .andExpect(status().isUnprocessableContent());
+        }
+        mvc.perform(post("/api/loans").contentType(APPLICATION_JSON).content(MICROLOAN.replace("0.8", "0.12345")))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/loans").contentType(APPLICATION_JSON).content(CARD.replace("CREDIT_CARD", "UNKNOWN")))
+                .andExpect(status().isBadRequest());
+        assertEquals(0, jdbc.queryForObject("select count(*) from loans", Integer.class));
+    }
 
     @BeforeEach void cleanDedicatedTestDatabase() {
         String database = jdbc.queryForObject("select current_database()", String.class);
@@ -147,6 +205,20 @@ class LoanApiIT {
         mvc.perform(post("/api/loans").contentType(APPLICATION_JSON).content("{broken"))
                 .andExpect(status().isBadRequest()).andExpect(content().contentTypeCompatibleWith("application/problem+json"));
     }
+    @Test void deletingDebtRemovesOnlyItsPaymentHistoryAndCanBeRetried() throws Exception {
+        String deleted = createDebt(CARD), kept = createLoan();
+        savedPayment(deleted, "5000");
+        savedPayment(deleted, "5000");
+        savedPayment(kept, "10000");
+        mvc.perform(delete("/api/loans/" + deleted)).andExpect(status().isNoContent());
+        mvc.perform(delete("/api/loans/" + deleted)).andExpect(status().isNoContent());
+        mvc.perform(get("/api/loans/" + deleted)).andExpect(status().isNotFound());
+        mvc.perform(get("/api/loans")).andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value(kept));
+        mvc.perform(get("/api/loans/" + kept)).andExpect(jsonPath("$.payments.length()").value(1));
+        assertEquals(1, countPayments());
+    }
+
     @Test void keepsHistoriesOfDifferentLoansSeparate() throws Exception {
         String first = createLoan(), second = createLoan(); savedPayment(first, "10000");
         mvc.perform(get("/api/loans/" + second)).andExpect(jsonPath("$.payments.length()").value(0))

@@ -41,6 +41,12 @@ public class LoanController {
         return ResponseEntity.status(201).body(payment);
     }
 
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@PathVariable UUID id) {
+        service.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+
     @DeleteMapping("/{id}/payments/{paymentId}")
     public ResponseEntity<Void> undo(@PathVariable UUID id, @PathVariable UUID paymentId) {
         service.undo(id, paymentId);

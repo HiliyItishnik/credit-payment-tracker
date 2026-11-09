@@ -20,6 +20,44 @@ class AmortizationCalculatorTest {
         return calculator.plan(terms, terms.principal(), 0, ZERO, ZERO);
     }
 
+    @Test void calculatesMicroloanInterestForActualDaysAndFullPayoff() {
+        var terms = new AmortizationCalculator.Terms(number("10000"), ZERO, number("12400"),
+                LocalDate.of(2026, 2, 1), number("0.8"), LocalDate.of(2026, 1, 2));
+        var result = plan(terms);
+        assertEquals(1, result.months());
+        same("2400", result.totalInterest());
+        same("12400", result.totalPayment());
+        var split = calculator.splitPayment(terms, terms.principal(), 0, number("12400"));
+        same("2400", split.interest()); same("0", split.balance());
+    }
+
+    @Test void microloanUsesCalendarDaysAndRemainingPrincipalAfterFirstPayment() {
+        var terms = new AmortizationCalculator.Terms(number("1000"), ZERO, number("600"),
+                LocalDate.of(2028, 1, 31), number("0.1"), LocalDate.of(2028, 1, 21));
+        var result = plan(terms);
+        same("10", result.rows().getFirst().interest());
+        same("410", result.rows().getFirst().balance());
+        // Jan 31 to leap-year Feb 29: 29 days, 410 * 0.1% * 29 = 11.89.
+        same("11.89", result.rows().get(1).interest());
+        same("421.89", result.rows().getLast().payment());
+        var next = calculator.plan(terms, number("410"), 1, ZERO, ZERO);
+        assertEquals(result.rows().get(1), next.rows().getFirst());
+        assertEquals(result.rows().getFirst().interest(),
+                calculator.splitPayment(terms, terms.principal(), 0, number("600")).interest());
+    }
+
+    @Test void microloanRoundsOnceAfterMultiplyingByDays() {
+        var terms = new AmortizationCalculator.Terms(number("1"), ZERO, number("2"),
+                LocalDate.of(2026, 1, 31), number("0.02"), LocalDate.of(2026, 1, 1));
+        same("0.01", plan(terms).totalInterest());
+    }
+
+    @Test void rejectsMicroloanWithPaymentDateBeforeAccrualStart() {
+        var terms = new AmortizationCalculator.Terms(number("1000"), ZERO, number("1000"),
+                LocalDate.of(2026, 1, 1), number("0.8"), LocalDate.of(2026, 1, 2));
+        assertThrows(CalculationException.class, () -> plan(terms));
+    }
+
     @Test void calculatesInterestPrincipalAndReducedFinalPayment() {
         var result = plan(terms("100000", "12", "10000"));
         var first = result.rows().getFirst();

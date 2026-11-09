@@ -31,8 +31,11 @@ public class LoanService {
                 || request.firstPaymentDate().isAfter(LocalDate.of(2200, 12, 31))) {
             throw new CalculationException("Дата первого платежа должна быть между 1900 и 2200 годом.");
         }
-        Loan loan = new Loan(request.name(), request.principal().setScale(2), request.annualRate(),
-                request.monthlyPayment().setScale(2), request.firstPaymentDate());
+        validateType(request);
+        Loan loan = new Loan(request.name(), request.principal().setScale(2),
+                request.debtType() == DebtType.MICROLOAN ? ZERO : request.annualRate(),
+                request.monthlyPayment().setScale(2), request.firstPaymentDate(), request.debtType(),
+                request.creditLimit(), request.dailyRate(), request.interestStartDate());
         calculator.plan(loan.terms(), loan.getPrincipal(), 0, ZERO, ZERO);
         return detail(loans.save(loan), List.of());
     }
@@ -42,7 +45,7 @@ public class LoanService {
         return loans.findAllByOrderByCreatedAtAsc().stream().map(loan -> {
             BigDecimal balance = payments.findFirstByLoanIdOrderByInstallmentNumberDesc(loan.getId())
                     .map(Payment::getBalance).orElse(loan.getPrincipal());
-            return new LoanSummary(loan.getId(), loan.getName(), loan.getPrincipal(), balance, loan.getAnnualRate());
+            return new LoanSummary(loan.getId(), loan.getName(), loan.getPrincipal(), balance, loan.getAnnualRate(), loan.getDebtType());
         }).toList();
     }
 
@@ -74,8 +77,16 @@ public class LoanService {
             return view(existing.get());
         }
         List<Payment> history = history(id);
-        var split = calculator.splitPayment(balance(loan, history), loan.getAnnualRate(), request.amount());
+        var split = calculator.splitPayment(loan.terms(), balance(loan, history), history.size(), request.amount());
         return view(payments.saveAndFlush(new Payment(loan, request.requestId(), history.size() + 1, split)));
+    }
+
+    @Transactional
+    public void delete(UUID id) {
+        loans.findLockedById(id).ifPresent(loan -> {
+            payments.deleteAllForLoan(id);
+            loans.delete(loan);
+        });
     }
 
     @Transactional
@@ -90,6 +101,32 @@ public class LoanService {
     }
 
     private Loan find(UUID id) { return loans.findById(id).orElseThrow(this::notFound); }
+    private void validateType(CreateLoan request) {
+        if (request.debtType() == DebtType.MICROLOAN) {
+            if (request.dailyRate() == null || request.interestStartDate() == null) {
+                throw new CalculationException("Для микрозайма укажи дневную ставку и дату начала начисления процентов.");
+            }
+            if (request.interestStartDate().isBefore(LocalDate.of(1900, 1, 1))
+                    || !request.interestStartDate().isBefore(request.firstPaymentDate())) {
+                throw new CalculationException("Начало начисления процентов должно быть не раньше 1900 года и раньше первого платежа.");
+            }
+            if (request.annualRate() != null && request.annualRate().signum() != 0) {
+                throw new CalculationException("Для микрозайма используй дневную ставку вместо годовой.");
+            }
+        } else {
+            if (request.annualRate() == null) throw new CalculationException("Укажи годовую ставку.");
+            if (request.dailyRate() != null || request.interestStartDate() != null) {
+                throw new CalculationException("Дневная ставка и начало начисления доступны только для микрозайма.");
+            }
+        }
+        if (request.debtType() == DebtType.CREDIT_CARD) {
+            if (request.creditLimit() == null || request.creditLimit().compareTo(request.principal()) < 0) {
+                throw new CalculationException("Кредитный лимит должен быть не меньше текущего долга по карте.");
+            }
+        } else if (request.creditLimit() != null) {
+            throw new CalculationException("Кредитный лимит доступен только для кредитной карты.");
+        }
+    }
     private ApiException notFound() { return new ApiException(HttpStatus.NOT_FOUND, "Кредит не найден."); }
     private List<Payment> history(UUID id) { return payments.findByLoanIdOrderByInstallmentNumberAsc(id); }
     private BigDecimal balance(Loan loan, List<Payment> history) {
@@ -100,13 +137,16 @@ public class LoanService {
         BigDecimal interestPaid = history.stream().map(Payment::getInterest).reduce(ZERO, BigDecimal::add);
         BigDecimal totalPaid = history.stream().map(Payment::getAmount).reduce(ZERO, BigDecimal::add);
         boolean paidOff = balance.signum() == 0;
-        BigDecimal fee = paidOff ? ZERO : calculator.interest(balance, loan.getAnnualRate());
+        BigDecimal fee = paidOff ? ZERO : calculator.interest(loan.terms(), balance, history.size());
         BigDecimal maximum = balance.add(fee);
         return new LoanDetail(loan.getId(), loan.getName(), loan.getPrincipal(), loan.getAnnualRate(),
                 loan.getMonthlyPayment(), loan.getFirstPaymentDate(), balance, loan.getPrincipal().subtract(balance),
                 interestPaid, totalPaid, paidOff,
                 paidOff ? null : loan.getFirstPaymentDate().plusMonths(history.size()), fee,
-                loan.getMonthlyPayment().min(maximum), maximum, history.stream().map(this::view).toList());
+                loan.getMonthlyPayment().min(maximum), maximum, history.stream().map(this::view).toList(),
+                loan.getDebtType(), loan.getCreditLimit(),
+                loan.getCreditLimit() == null ? null : loan.getCreditLimit().subtract(balance),
+                loan.getDailyRate(), loan.getInterestStartDate());
     }
     private PaymentView view(Payment p) {
         return new PaymentView(p.getId(), p.getInstallmentNumber(), p.getDueDate(), p.getAmount(),

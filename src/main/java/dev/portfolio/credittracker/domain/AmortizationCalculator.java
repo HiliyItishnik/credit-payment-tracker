@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -17,7 +18,12 @@ public class AmortizationCalculator {
     private static final BigDecimal RATE_DIVISOR = new BigDecimal("1200");
 
     public record Terms(BigDecimal principal, BigDecimal annualRate,
-                        BigDecimal monthlyPayment, LocalDate firstPaymentDate) { }
+                        BigDecimal monthlyPayment, LocalDate firstPaymentDate,
+                        BigDecimal dailyRate, LocalDate interestStartDate) {
+        public Terms(BigDecimal principal, BigDecimal annualRate, BigDecimal monthlyPayment, LocalDate firstPaymentDate) {
+            this(principal, annualRate, monthlyPayment, firstPaymentDate, null, null);
+        }
+    }
     public record Row(int number, LocalDate date, BigDecimal openingBalance, BigDecimal payment,
                       BigDecimal interest, BigDecimal principal, BigDecimal balance) { }
     public record Plan(int months, LocalDate payoffDate, BigDecimal totalInterest,
@@ -27,6 +33,17 @@ public class AmortizationCalculator {
     public BigDecimal interest(BigDecimal balance, BigDecimal annualRate) {
         // Divide once to avoid rounding the rate before calculating money.
         return balance.multiply(annualRate).divide(RATE_DIVISOR, 2, RoundingMode.HALF_UP);
+    }
+
+    public BigDecimal interest(Terms terms, BigDecimal balance, int completedPeriods) {
+        if (terms.dailyRate() == null) return interest(balance, terms.annualRate());
+        LocalDate start = completedPeriods == 0 ? terms.interestStartDate()
+                : terms.firstPaymentDate().plusMonths(completedPeriods - 1L);
+        LocalDate end = terms.firstPaymentDate().plusMonths(completedPeriods);
+        long days = ChronoUnit.DAYS.between(start, end);
+        if (days <= 0) throw new CalculationException("Дата платежа должна быть позже начала начисления процентов.");
+        return balance.multiply(terms.dailyRate()).multiply(BigDecimal.valueOf(days))
+                .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
     }
 
     public Plan plan(Terms terms, BigDecimal balance, int completedPeriods,
@@ -41,11 +58,11 @@ public class AmortizationCalculator {
             if (rows.size() == MAX_MONTHS) {
                 throw new CalculationException("Погашение занимает больше 600 месяцев. Увеличь ежемесячный платёж.");
             }
-            BigDecimal fee = interest(remaining, terms.annualRate());
+            BigDecimal fee = interest(terms, remaining, completedPeriods + rows.size());
             BigDecimal budget = terms.monthlyPayment().add(extraMonthly)
                     .add(rows.isEmpty() ? oneTimeExtra : ZERO);
             if (budget.compareTo(fee) <= 0) {
-                throw new CalculationException("Ежемесячный платёж должен быть больше процентов за месяц: " + fee + " ₽.");
+                throw new CalculationException("Плановый платёж должен быть больше процентов за период: " + fee + " ₽.");
             }
             BigDecimal payment = budget.min(remaining.add(fee)).setScale(2, RoundingMode.UNNECESSARY);
             BigDecimal principal = payment.subtract(fee);
@@ -65,11 +82,18 @@ public class AmortizationCalculator {
     }
 
     public Split splitPayment(BigDecimal balance, BigDecimal annualRate, BigDecimal amount) {
+        return split(balance, interest(balance, annualRate), amount);
+    }
+
+    public Split splitPayment(Terms terms, BigDecimal balance, int completedPeriods, BigDecimal amount) {
+        return split(balance, interest(terms, balance, completedPeriods), amount);
+    }
+
+    private Split split(BigDecimal balance, BigDecimal fee, BigDecimal amount) {
         checkMoney(amount, false);
         if (balance.signum() == 0) throw new CalculationException("Кредит уже погашен.");
-        BigDecimal fee = interest(balance, annualRate);
         if (amount.compareTo(fee) < 0) {
-            throw new CalculationException("Платёж должен покрывать проценты за месяц: " + fee + " ₽.");
+            throw new CalculationException("Платёж должен покрывать проценты за период: " + fee + " ₽.");
         }
         BigDecimal maximum = balance.add(fee);
         if (amount.compareTo(maximum) > 0) {
