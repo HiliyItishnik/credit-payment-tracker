@@ -19,6 +19,15 @@
     <header class="topbar"><span>Личные финансы <span class="separator">/</span> Долги</span><a class="button secondary" href="/budget.html">Бюджет и план</a></header>
     <div class="page-heading"><div><p class="eyebrow">ПЛАН НА ФИНАНСОВУЮ СВОБОДУ</p><h1>Долги под контролем</h1><p class="subtle">Каждый платёж приближает к цели.</p></div><button class="button primary open-create" type="button">＋ Добавить долг</button></div>
     <p id="global-error" class="notice error" role="alert" hidden></p>
+    <section id="debt-overview" class="card debt-overview" aria-labelledby="debt-overview-title" hidden>
+      <h2 id="debt-overview-title">Все долги</h2>
+      <dl class="debt-overview-totals">
+        <div><dt>Общий остаток основного долга</dt><dd id="overview-balance"></dd></div>
+        <div><dt>Осталось оплатить в этом месяце</dt><dd id="overview-due"></dd></div>
+      </dl>
+      <h3>Погашено основного долга</h3>
+      <dl id="overview-principal" class="debt-overview-totals"></dl>
+    </section>
     <p id="loading" class="loading" role="status">Загружаем долги…</p>
     <section id="empty" class="empty card" hidden>
       <div class="empty-art" aria-hidden="true">↗</div><p class="eyebrow">НАЧНИ С ПЕРВОГО ШАГА</p><h2>У каждого долга есть финиш</h2><p>Добавь кредит, карту или микрозайм, чтобы увидеть путь до последнего платежа.<br>Сравни обычный график и досрочное погашение.</p><button class="button primary open-create" type="button">Добавить первый долг</button>

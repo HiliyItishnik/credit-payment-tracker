@@ -56,6 +56,8 @@ public class BudgetController {
     }
     public record MonthReview(YearMonth month, Totals planned, Actual actual, BigDecimal paid,
                               Forecast baseline, Forecast adjusted) {}
+    public record PrincipalPaid(YearMonth month, BigDecimal amount) {}
+    public record DebtOverview(YearMonth month, BigDecimal balance, BigDecimal due, List<PrincipalPaid> principalPaid) {}
 
     private final BudgetService service;
 
@@ -77,6 +79,16 @@ public class BudgetController {
     public CashCalendar.Result calendar(@PathVariable @DateTimeFormat(pattern = "uuuu-MM") YearMonth month,
                                         @RequestParam(defaultValue = "0") BigDecimal openingBalance) {
         return service.calendar(month, openingBalance);
+    }
+
+    @GetMapping("/until-payday")
+    public CashCalendar.PaydayPlan untilPayday(@RequestParam BigDecimal balance) {
+        return service.untilPayday(balance);
+    }
+
+    @GetMapping("/debt-overview")
+    public DebtOverview debtOverview() {
+        return service.debtOverview();
     }
 
     @GetMapping(value = "/reminders.ics", produces = "text/calendar;charset=UTF-8")

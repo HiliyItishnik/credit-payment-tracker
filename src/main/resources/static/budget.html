@@ -74,6 +74,21 @@
       <button id="budget-more" class="button secondary" type="button" hidden>Показать ещё месяцы</button>
     </section>
     <div id="budget-tools" hidden>
+      <section class="card budget-card budget-tool" aria-labelledby="payday-title">
+        <h2 id="payday-title">До ближайшего поступления</h2>
+        <p class="subtle">Введи текущий остаток. Трекер учтёт предстоящие траты с сегодняшнего дня до даты следующего дохода. Если сегодняшний расход уже оплачен, результат будет консервативным. Платежи, внесённые в историю долгов, уже учтены.</p>
+        <form id="payday-form" class="budget-inline">
+          <label>Текущий остаток, ₽<input id="payday-balance" inputmode="decimal" required></label>
+          <button class="button primary" type="submit">Рассчитать до поступления</button>
+        </form>
+        <p id="payday-message" class="notice" role="status"></p>
+        <dl id="payday-totals" class="budget-totals" hidden>
+          <div><dt>Обязательные траты и платежи</dt><dd id="payday-required"></dd></div>
+          <div><dt>Остаток после них</dt><dd id="payday-remaining"></dd></div>
+          <div><dt>Сверх резерва для досрочного погашения</dt><dd id="payday-extra"></dd></div>
+        </dl>
+        <div id="payday-results" class="table-wrap" tabindex="0" role="region" aria-label="Расходы до поступления" hidden></div>
+      </section>
       <section class="card budget-card budget-tool" aria-labelledby="calendar-title">
         <h2 id="calendar-title">Календарь денег</h2>
         <p class="subtle">Укажи дни в строках бюджета. Календарь покажет, хватит ли денег к дате обязательного платежа. Остаток на начало месяца вводится отдельно.</p>

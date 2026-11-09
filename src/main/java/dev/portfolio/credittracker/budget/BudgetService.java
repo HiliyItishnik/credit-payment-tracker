@@ -78,23 +78,62 @@ public class BudgetService {
         if (month.isBefore(YearMonth.from(today))) {
             throw new CalculationException("Выбери текущий или будущий месяц для календаря.");
         }
-        if (openingBalance.signum() < 0 || openingBalance.scale() > 2
-                || openingBalance.compareTo(new BigDecimal("50000000000")) > 0) {
-            throw new CalculationException("Остаток должен быть от 0 до 50 млрд ₽ с точностью до копеек.");
-        }
+        validateBalance(openingBalance);
         Budget budget = loadBudget();
         var events = new ArrayList<>(paidEvents(month));
         var plan = minimumSchedule(today);
         for (var planned : plan.months()) {
             if (!planned.month().equals(month)) continue;
             for (var payment : planned.payments()) {
-                events.add(new CashCalendar.Event(payment.date(), CashCalendar.Kind.PAYMENT, payment.name(),
-                        payment.amount()));
+                events.add(CashCalendar.debtEvent(payment));
             }
         }
         boolean incomplete = plan.status() == RepaymentPlanner.Status.LIMIT
                 && !month.isBefore(YearMonth.from(today).plusMonths(MAX_MONTHS));
         return CashCalendar.build(month, openingBalance, budget, events, incomplete);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public CashCalendar.PaydayPlan untilPayday(BigDecimal balance) {
+        validateBalance(balance);
+        LocalDate today = LocalDate.now();
+        return CashCalendar.untilPayday(today, balance, loadBudget(), minimumSchedule(today).months());
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public DebtOverview debtOverview() {
+        LocalDate today = LocalDate.now();
+        YearMonth current = YearMonth.from(today);
+        YearMonth start = current.minusMonths(2);
+        var debts = activeDebts();
+        BigDecimal balance = debts.stream().map(RepaymentPlanner.Debt::balance).reduce(ZERO, BigDecimal::add);
+        BigDecimal due = minimumSchedule(today, debts).months().stream()
+                .filter(month -> month.month().equals(current)).findFirst()
+                .map(RepaymentPlanner.Month::total).orElse(ZERO);
+        var amounts = new HashMap<YearMonth, BigDecimal>();
+        jdbc.sql("""
+                SELECT CAST(date_trunc('month', pay_date) AS date), SUM(principal)
+                FROM (
+                    SELECT COALESCE(paid_on, CAST(recorded_at AT TIME ZONE :zone AS date)) AS pay_date, principal
+                    FROM payments
+                ) history
+                WHERE pay_date >= :start AND pay_date < :end
+                GROUP BY 1
+                """).param("zone", ZoneId.systemDefault().getId())
+                .param("start", start.atDay(1)).param("end", current.plusMonths(1).atDay(1))
+                .query((rs, row) -> new PrincipalPaid(YearMonth.from(rs.getObject(1, LocalDate.class)), rs.getBigDecimal(2)))
+                .list().forEach(row -> amounts.put(row.month(), row.amount()));
+        var principalPaid = new ArrayList<PrincipalPaid>();
+        for (YearMonth month = start; !month.isAfter(current); month = month.plusMonths(1)) {
+            principalPaid.add(new PrincipalPaid(month, amounts.getOrDefault(month, ZERO)));
+        }
+        return new DebtOverview(current, balance, due, List.copyOf(principalPaid));
+    }
+
+    private void validateBalance(BigDecimal balance) {
+        if (balance.signum() < 0 || balance.scale() > 2 || balance.compareTo(new BigDecimal("50000000000")) > 0) {
+            throw new CalculationException("Остаток должен быть от 0 до 50 млрд ₽ с точностью до копеек.");
+        }
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -107,7 +146,11 @@ public class BudgetService {
     }
 
     private RepaymentPlanner.Plan minimumSchedule(LocalDate today) {
-        return planner.plan(activeDebts(), today, new RepaymentPlanner.Inputs(ZERO, ZERO, ZERO, ZERO, ZERO, Map.of()), MINIMUM_ONLY);
+        return minimumSchedule(today, activeDebts());
+    }
+
+    private RepaymentPlanner.Plan minimumSchedule(LocalDate today, List<RepaymentPlanner.Debt> debts) {
+        return planner.plan(debts, today, new RepaymentPlanner.Inputs(ZERO, ZERO, ZERO, ZERO, ZERO, Map.of()), MINIMUM_ONLY);
     }
 
     private record SavedMonth(Actual actual, Totals planned) {}

@@ -44,6 +44,7 @@ async function refresh(preferredId = state.id) {
   // A saved mutation makes the previous form stale even if reloading the list fails.
   $('workspace').hidden = true; $('empty').hidden = true; $('loading').hidden = false;
   const loans = await api('');
+  await refreshDebtOverview();
   const nav = $('loan-list');
   nav.replaceChildren();
   for (const loan of loans) {
@@ -63,6 +64,32 @@ async function refresh(preferredId = state.id) {
   }
   const id = loans.some(loan => loan.id === preferredId) ? preferredId : loans[0].id;
   await loadLoan(id);
+}
+
+async function refreshDebtOverview() {
+  const section = $('debt-overview');
+  section.hidden = true;
+  try {
+    const response = await fetch('/api/budget/debt-overview');
+    if (!response.ok) return;
+    const overview = await response.json();
+    $('overview-balance').textContent = money(overview.balance);
+    $('overview-due').textContent = money(overview.due);
+    const format = new Intl.DateTimeFormat('ru-RU', {month: 'short', year: 'numeric'});
+    const rows = overview.principalPaid.map(({month, amount}) => {
+      const cell = document.createElement('div');
+      const label = document.createElement('dt');
+      label.textContent = format.format(new Date(month + '-01T12:00:00'));
+      const value = document.createElement('dd');
+      value.textContent = money(amount);
+      cell.append(label, value);
+      return cell;
+    });
+    $('overview-principal').replaceChildren(...rows);
+    section.hidden = false;
+  } catch {
+    // The debt list remains available if the aggregate is temporarily unavailable.
+  }
 }
 
 async function loadLoan(id) {

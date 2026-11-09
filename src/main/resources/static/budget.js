@@ -207,6 +207,7 @@ function renderOverview(result) {
   $('budget-tools').hidden = false;
   $('calendar-results').hidden = true;
   $('calendar-message').textContent = '';
+  resetPayday();
   resetReview();
 }
 
@@ -256,6 +257,62 @@ function renderReview(review) {
 
 function setToolBusy(form, busy) {
   for (const control of form.elements) control.disabled = busy;
+}
+
+function resetPayday() {
+  $('payday-message').textContent = '';
+  $('payday-message').classList.remove('error');
+  $('payday-totals').hidden = true;
+  $('payday-results').hidden = true;
+}
+
+$('payday-balance').addEventListener('input', resetPayday);
+$('payday-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const message = $('payday-message');
+  resetPayday();
+  setToolBusy(form, true);
+  try {
+    const query = new URLSearchParams({balance: amountInput('payday-balance')});
+    const plan = await budgetApi(undefined, '/until-payday?' + query);
+    if (!plan.nextIncomeDate) {
+      message.textContent = 'Добавь день регулярного дохода или дату будущего разового поступления.';
+      return;
+    }
+    if (plan.incompleteDebtSchedule) {
+      message.textContent = 'Дата поступления за пределами графика долгов. Укажи более близкое поступление.';
+      return;
+    }
+    const summary = ['Следующее поступление — ' + dateWithYear(plan.nextIncomeDate) + '.'];
+    if (plan.remaining < 0) summary.push('До этой даты не хватит ' + money(-plan.remaining) + '.');
+    if (plan.undatedExpenses) {
+      summary.push('Расходов без даты: ' + plan.undatedExpenses + '. Укажи их дни, чтобы рассчитать досрочную доплату.');
+    } else {
+      summary.push('Целевой резерв — ' + money(plan.reserve) + '.');
+    }
+    message.textContent = summary.join(' ');
+    message.classList.toggle('error', plan.remaining < 0);
+    $('payday-required').textContent = money(plan.required);
+    $('payday-remaining').textContent = money(plan.remaining);
+    $('payday-extra').textContent = plan.extra == null ? '—' : money(plan.extra);
+    $('payday-totals').hidden = false;
+    if (plan.obligations.length) {
+      tableInto('payday-results', ['Дата', 'Операция', 'Сумма'], plan.obligations.map(item => [
+        dayName(item.date), (item.kind === 'PAYMENT' ? 'Платёж · ' : 'Расход · ') + item.name, money(item.amount)
+      ]));
+    }
+  } catch (error) {
+    message.classList.add('error');
+    message.textContent = error.message;
+  } finally {
+    setToolBusy(form, false);
+  }
+});
+
+function dateWithYear(date) {
+  return new Intl.DateTimeFormat('ru-RU', {day: 'numeric', month: 'long', year: 'numeric'})
+    .format(new Date(date + 'T12:00:00')).replace(/\s*г\.$/u, '');
 }
 
 $('calendar-month').value = $('actual-month').value = currentMonth;

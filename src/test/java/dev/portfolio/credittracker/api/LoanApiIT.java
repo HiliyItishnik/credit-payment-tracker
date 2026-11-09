@@ -14,6 +14,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import java.math.BigDecimal;
 import java.time.YearMonth;
+import java.time.LocalDate;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -197,6 +198,55 @@ class LoanApiIT {
                 .andExpect(jsonPath("$.firstGap.missing").value(1000))
                 .andExpect(jsonPath("$.rows[3].event.date").value(month.atEndOfMonth().toString()))
                 .andExpect(jsonPath("$.rows[3].balance").value(3900));
+    }
+
+    @Test void paydayPlanUsesCurrentBalanceAndOnlyExpensesBeforeNextDatedIncome() throws Exception {
+        LocalDate today = LocalDate.now();
+        createDebt("""
+                {"name":"Кредит","principal":5000,"annualRate":0,"monthlyPayment":1000,"firstPaymentDate":"%s"}
+                """.formatted(today));
+        String budget = """
+                {"incomes":[],"expenses":[],"reserve":1500,
+                 "oneOffs":[{"name":"Расход сегодня","amount":500,"date":"%s","direction":"EXPENSE"},
+                            {"name":"Доход","amount":5000,"date":"%s","direction":"INCOME"},
+                            {"name":"Расход в день дохода","amount":2000,"date":"%s","direction":"EXPENSE"}]}
+                """.formatted(today, today.plusDays(2), today.plusDays(2));
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content(budget)).andExpect(status().isOk());
+        mvc.perform(get("/api/budget/until-payday").param("balance", "4000"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nextIncomeDate").value(today.plusDays(2).toString()))
+                .andExpect(jsonPath("$.obligations.length()").value(2))
+                .andExpect(jsonPath("$.required").value(1500))
+                .andExpect(jsonPath("$.remaining").value(2500))
+                .andExpect(jsonPath("$.extra").value(1000));
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON)
+                .content(budget.replace("\"expenses\":[]", "\"expenses\":[{\"name\":\"Еда\",\"amount\":1000}]")))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/budget/until-payday").param("balance", "4000")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.undatedExpenses").value(1))
+                .andExpect(jsonPath("$.extra").doesNotExist());
+    }
+
+    @Test void debtOverviewSumsBalancesAndGroupsOnlyPrincipalByActualPaymentMonth() throws Exception {
+        YearMonth current = YearMonth.now();
+        String id = createDebt("""
+                {"name":"Кредит","principal":5000,"annualRate":12,"monthlyPayment":1000,"firstPaymentDate":"%s"}
+                """.formatted(current.minusMonths(1).atDay(1)));
+        mvc.perform(post("/api/loans/" + id + "/payments").contentType(APPLICATION_JSON).content("""
+                {"requestId":"%s","amount":1000,"paidOn":"%s"}
+                """.formatted(UUID.randomUUID(), current.minusMonths(1).atEndOfMonth())))
+                .andExpect(status().isCreated());
+        createDebt("""
+                {"name":"Другой кредит","principal":3000,"annualRate":0,"monthlyPayment":1000,"firstPaymentDate":"%s"}
+                """.formatted(current.atDay(1)));
+        mvc.perform(get("/api/budget/debt-overview")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.balance").value(7050))
+                .andExpect(jsonPath("$.due").value(2000))
+                .andExpect(jsonPath("$.principalPaid.length()").value(3))
+                .andExpect(jsonPath("$.principalPaid[0].amount").value(0))
+                .andExpect(jsonPath("$.principalPaid[1].month").value(current.minusMonths(1).toString()))
+                .andExpect(jsonPath("$.principalPaid[1].amount").value(950))
+                .andExpect(jsonPath("$.principalPaid[2].amount").value(0));
     }
 
     @Test void actualsKeepOriginalPlanAndReforecastWithoutDoubleCountingRecordedPayments() throws Exception {
