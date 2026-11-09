@@ -3,7 +3,7 @@
 .budget-card{padding:22px;min-width:0;margin:0}
 .budget-card legend{font-weight:650;padding:0 6px}
 .budget-entries,.budget-months{display:grid;gap:12px;margin:16px 0}
-.budget-entry{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(90px,1fr) auto;align-items:end;gap:8px}
+.budget-entry{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(75px,1fr) 64px auto;align-items:end;gap:8px}
 .budget-entry label{margin:0}
 .budget-entry input{margin-top:6px}
 .budget-remove{padding:8px 10px;font-size:18px}
@@ -15,6 +15,14 @@
 .budget-month{border:1px solid var(--line);border-radius:9px;padding:12px}
 .budget-month summary{cursor:pointer;font-size:14px;font-weight:600}
 .budget-month .subtle{margin:8px 0}
+.budget-tool{margin-top:20px}
+.budget-tool h2{margin:0 0 10px}
+.budget-inline{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin:16px 0}
+.budget-inline label{margin:0}
+.budget-inline input,.budget-strategy select{margin-top:6px}
+.budget-strategy{max-width:340px;margin:16px 0}
+.budget-forecast{margin:12px 0 0}
+.budget-entry input[type=number]{padding-inline:6px}
 @media(max-width:740px){
   .budget-columns,.budget-totals{grid-template-columns:1fr}
   .budget-page{padding-inline:16px}

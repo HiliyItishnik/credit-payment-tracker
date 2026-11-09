@@ -8,6 +8,12 @@ const monthName = month => monthFormat.format(new Date(month + '-01T12:00:00')).
 const groups = ['incomes', 'expenses'];
 let months = [];
 let shown = 0;
+let overview;
+let openedMonth;
+const now = new Date();
+const currentMonth = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+const dayFormat = new Intl.DateTimeFormat('ru-RU', {day: 'numeric', month: 'long'});
+const dayName = date => dayFormat.format(new Date(date + 'T12:00:00'));
 
 function element(tag, content, className) {
   const node = document.createElement(tag);
@@ -16,8 +22,8 @@ function element(tag, content, className) {
   return node;
 }
 
-async function budgetApi(options) {
-  const response = await fetch('/api/budget', options);
+async function budgetApi(options, path = '') {
+  const response = await fetch('/api/budget' + path, options);
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     throw new Error(error.detail || 'Не удалось загрузить или сохранить бюджет.');
@@ -28,6 +34,7 @@ async function budgetApi(options) {
 function markEdited() {
   $('budget-status').textContent = 'Есть несохранённые изменения.';
   $('budget-result').hidden = true;
+  $('budget-tools').hidden = true;
 }
 
 function addEntry(group, entry = {}, focus = false) {
@@ -47,6 +54,16 @@ function addEntry(group, entry = {}, focus = false) {
   amount.required = true;
   amount.value = entry.amount ?? '';
   amountLabel.append(amount);
+  const dayLabel = element('label', 'День');
+  const day = element('input');
+  day.type = 'number';
+  day.name = 'day';
+  day.min = '1';
+  day.max = '31';
+  day.step = '1';
+  day.placeholder = '—';
+  day.value = entry.day ?? '';
+  dayLabel.append(day);
   const remove = element('button', '×', 'button danger budget-remove');
   remove.type = 'button';
   remove.setAttribute('aria-label', group === 'incomes' ? 'Убрать доход' : 'Убрать расход');
@@ -55,7 +72,7 @@ function addEntry(group, entry = {}, focus = false) {
     markEdited();
     $(group === 'incomes' ? 'add-income' : 'add-expense').focus();
   });
-  row.append(nameLabel, amountLabel, remove);
+  row.append(nameLabel, amountLabel, dayLabel, remove);
   $(group).append(row);
   if (focus) name.focus();
 }
@@ -67,7 +84,8 @@ function readEntries(group) {
     if (!name || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0 || Number(amount) > 1e9) {
       throw new Error('Укажи название и сумму от 0,01 до 1 млрд ₽ с точностью до копеек.');
     }
-    return {name, amount};
+    const day = row.querySelector('[name=day]').value;
+    return {name, amount, day: day ? Number(day) : null};
   });
 }
 
@@ -129,6 +147,164 @@ function renderPlan(plan) {
   $('budget-result').hidden = false;
 }
 
+function tableInto(id, columns, rows) {
+  const table = element('table');
+  const head = table.createTHead().insertRow();
+  for (const title of columns) {
+    const cell = element('th', title);
+    cell.scope = 'col';
+    head.append(cell);
+  }
+  const body = table.createTBody();
+  for (const values of rows) {
+    const row = body.insertRow();
+    for (const value of values) row.insertCell().textContent = value;
+  }
+  $(id).replaceChildren(table);
+  $(id).hidden = false;
+}
+
+function describeForecast(plan) {
+  if (plan.payoffMonth) return monthName(plan.payoffMonth);
+  if (plan.shortfall) return 'Дефицит ' + money(plan.shortfall.missing) + ' в месяце ' + monthName(plan.shortfall.month);
+  return plan.status === 'NO_DEBTS' ? 'Долгов нет' : 'За пределами расчёта';
+}
+
+function renderOverview(result) {
+  overview = result;
+  const strategies = [['Сначала дорогие', result.plan], ['Сначала маленькие', result.alternative]];
+  tableInto('strategy-comparison', ['Стратегия', 'Погашение всех долгов', 'Всего процентов'],
+    strategies.map(([name, plan]) => [name, describeForecast(plan), plan.payoffMonth ? money(plan.interest) : '—']));
+  renderPlan(result[$('budget-strategy').value]);
+  $('budget-tools').hidden = false;
+  $('calendar-results').hidden = true;
+  $('calendar-message').textContent = '';
+  resetReview();
+}
+
+function amountInput(id) {
+  const amount = $(id).value.trim().replace(',', '.');
+  if (!/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) > 5e10) {
+    throw new Error('Укажи сумму от 0 до 50 млрд ₽ с точностью до копеек.');
+  }
+  return amount;
+}
+
+function jsonPut(body) {
+  return {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)};
+}
+
+function resetReview() {
+  openedMonth = null;
+  $('actual-form').hidden = true;
+  $('actual-results').hidden = true;
+  $('actual-message').textContent = '';
+  $('actual-forecast').textContent = '';
+}
+
+function renderReview(review) {
+  const {planned, actual, paid, baseline, adjusted} = review;
+  openedMonth = review.month;
+  $('actual-income').value = actual?.income ?? '';
+  $('actual-expenses').value = actual?.expenses ?? '';
+  $('actual-form').hidden = false;
+  $('actual-message').textContent = monthName(review.month);
+  const rows = [
+    ['Доходы', planned.income, actual?.income],
+    ['Расходы без долгов', planned.expenses, actual?.expenses],
+    ['Платежи по долгам', planned.payments, paid],
+    ['Остаток', planned.payments == null ? null : planned.income - planned.expenses - planned.payments,
+      actual == null ? null : actual.income - actual.expenses - paid]
+  ];
+  const format = value => value == null ? '—' : money(value);
+  tableInto('actual-results', ['Показатель', 'План', 'Факт', 'Разница'], rows.map(([name, plan, fact]) => [
+    name, format(plan), format(fact), plan == null || fact == null ? '—' : money(fact - plan)
+  ]));
+  $('actual-forecast').textContent = adjusted
+    ? 'По обычному бюджету: ' + describeForecast(baseline) + '. С учётом факта: ' + describeForecast(adjusted)
+      + '. Расчёт предполагает, что введённые суммы — итог текущего месяца. Со следующего месяца действует обычный бюджет.'
+    : '';
+}
+
+function setToolBusy(form, busy) {
+  for (const control of form.elements) control.disabled = busy;
+}
+
+$('calendar-month').value = $('actual-month').value = currentMonth;
+$('calendar-month').min = currentMonth;
+$('actual-month').max = currentMonth;
+$('actual-month').min = '1900-01';
+$('calendar-month').max = '2200-12';
+$('budget-strategy').addEventListener('change', event => renderPlan(overview[event.target.value]));
+
+$('calendar-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const message = $('calendar-message');
+  $('calendar-results').hidden = true;
+  message.classList.remove('error');
+  message.textContent = 'Рассчитываем календарь…';
+  setToolBusy(form, true);
+  try {
+    const month = $('calendar-month').value;
+    const query = new URLSearchParams({openingBalance: amountInput('calendar-opening')});
+    const calendar = await budgetApi(undefined, '/calendar/' + month + '?' + query);
+    const {rows, firstGap, undatedEntries, incompleteDebtSchedule} = calendar;
+    const warnings = [];
+    if (firstGap) warnings.push('К ' + dayName(firstGap.date) + ' не хватит ' + money(firstGap.missing) + '.');
+    if (undatedEntries) warnings.push('Строк без даты: ' + undatedEntries + '. Укажи день, чтобы учесть их в календаре.');
+    if (incompleteDebtSchedule) warnings.push('Месяц за пределами расчёта обязательных платежей.');
+    message.classList.toggle('error', Boolean(firstGap));
+    message.textContent = warnings.join(' ') || (rows.length ? 'По указанным датам денег хватает.' : 'На этот месяц событий нет.');
+    if (rows.length) {
+      const kinds = {INCOME: 'Доход', EXPENSE: 'Расход', PAYMENT: 'Платёж по графику', RECORDED_PAYMENT: 'Записанный платёж'};
+      tableInto('calendar-results', ['Дата', 'Операция', 'Сумма', 'Остаток'], rows.map(({event, balance}) => [
+        dayName(event.date), kinds[event.kind] + ' · ' + event.name,
+        money(event.kind === 'INCOME' ? event.amount : -event.amount), money(balance)
+      ]));
+    }
+  } catch (error) {
+    message.classList.add('error');
+    message.textContent = error.message;
+  } finally {
+    setToolBusy(form, false);
+  }
+});
+
+$('actual-month').addEventListener('input', resetReview);
+$('actual-month-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  resetReview();
+  setToolBusy(form, true);
+  try {
+    renderReview(await budgetApi(undefined, '/months/' + $('actual-month').value));
+  } catch (error) {
+    $('actual-message').textContent = error.message;
+  } finally {
+    setToolBusy(form, false);
+  }
+});
+
+$('actual-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!openedMonth) return;
+  const form = event.currentTarget;
+  const picker = $('actual-month-form');
+  setToolBusy(form, true);
+  setToolBusy(picker, true);
+  try {
+    const body = {income: amountInput('actual-income'), expenses: amountInput('actual-expenses')};
+    renderReview(await budgetApi(jsonPut(body), '/months/' + openedMonth));
+    $('actual-message').textContent += ' · Факт сохранён';
+  } catch (error) {
+    $('actual-message').textContent = error.message;
+  } finally {
+    setToolBusy(form, false);
+    setToolBusy(picker, false);
+  }
+});
+
 function setBusy(busy) {
   for (const fieldset of $('budget-form').querySelectorAll('fieldset')) fieldset.disabled = busy;
   $('budget-save').disabled = busy;
@@ -157,12 +333,7 @@ $('budget-form').addEventListener('submit', async event => {
   setBusy(true);
   try {
     const budget = {incomes: readEntries('incomes'), expenses: readEntries('expenses')};
-    const result = await budgetApi({
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(budget)
-    });
-    renderPlan(result.plan);
+    renderOverview(await budgetApi(jsonPut(budget)));
     $('budget-status').textContent = 'Бюджет сохранён.';
   } catch (error) {
     showError(error);
@@ -173,10 +344,11 @@ $('budget-form').addEventListener('submit', async event => {
 
 async function loadBudget() {
   try {
-    const {budget, plan} = await budgetApi();
+    const result = await budgetApi();
+    const {budget} = result;
     for (const group of groups) for (const entry of budget[group]) addEntry(group, entry);
     $('budget-form').hidden = false;
-    if (budget.incomes.length || budget.expenses.length) renderPlan(plan);
+    renderOverview(result);
   } catch (error) {
     showError(error);
   } finally {

@@ -15,7 +15,7 @@
       <div>
         <p class="eyebrow">ЛИЧНЫЕ ФИНАНСЫ</p>
         <h1>Бюджет и план погашения</h1>
-        <p class="subtle">Укажи суммы за обычный месяц. Платежи по долгам трекер возьмёт из их графиков.</p>
+        <p class="subtle">Укажи суммы за обычный месяц. Чтобы видеть поступления и траты в календаре, добавь день месяца в каждой строке.</p>
       </div>
     </div>
     <p id="budget-loading" class="loading" role="status">Загружаем бюджет…</p>
@@ -48,10 +48,46 @@
         <div><dt>Остаток после расходов</dt><dd id="total-available"></dd></div>
       </dl>
       <p id="plan-status" class="notice" role="status"></p>
-      <p class="subtle">План использует весь остаток месяца на долги. Если нужен резерв, добавь его в расходы. Доплата идёт туда, где проценты за период выше относительно остатка долга. Платежи из прошлых месяцев сдвигаются на текущий месяц, без расчёта штрафов. Свободные деньги не переносятся между месяцами.</p>
+      <div id="strategy-comparison" class="table-wrap budget-comparison" tabindex="0" role="region" aria-label="Сравнение стратегий"></div>
+      <label class="budget-strategy">Подробный график
+        <select id="budget-strategy">
+          <option value="plan">Сначала самые дорогие долги</option>
+          <option value="alternative">Сначала самые маленькие долги</option>
+        </select>
+      </label>
+      <p class="subtle">Обе стратегии сначала покрывают плановые платежи. Доплата идёт на долг с самыми высокими процентами на рубль остатка или на самый маленький остаток. Учтены платежи, уже записанные за текущий месяц. Свободные деньги между месяцами не переносятся.</p>
       <div id="budget-months" class="budget-months"></div>
       <button id="budget-more" class="button secondary" type="button" hidden>Показать ещё месяцы</button>
     </section>
+    <div id="budget-tools" hidden>
+      <section class="card budget-card budget-tool" aria-labelledby="calendar-title">
+        <h2 id="calendar-title">Календарь денег</h2>
+        <p class="subtle">Укажи дни в строках бюджета. Календарь покажет, хватит ли денег к дате обязательного платежа. Остаток на начало месяца вводится отдельно.</p>
+        <form id="calendar-form" class="budget-inline">
+          <label>Месяц<input id="calendar-month" type="month" required></label>
+          <label>Остаток на начало месяца, ₽<input id="calendar-opening" inputmode="decimal" value="0" required></label>
+          <button class="button primary" type="submit">Показать календарь</button>
+        </form>
+        <p id="calendar-message" class="notice" role="status"></p>
+        <div id="calendar-results" class="table-wrap" tabindex="0" role="region" aria-label="Движение денег по датам" hidden></div>
+      </section>
+      <section class="card budget-card budget-tool" aria-labelledby="actual-title">
+        <h2 id="actual-title">План и факт</h2>
+        <p class="subtle">Введи фактические доходы и расходы за месяц. Платежи подтянутся из истории по дате записи. При первом сохранении трекер запомнит плановые суммы для сравнения.</p>
+        <form id="actual-month-form" class="budget-inline">
+          <label>Месяц<input id="actual-month" type="month" required></label>
+          <button class="button secondary" type="submit">Открыть месяц</button>
+        </form>
+        <form id="actual-form" class="budget-inline" hidden>
+          <label>Получено, ₽<input id="actual-income" inputmode="decimal" required></label>
+          <label>Потрачено без долгов, ₽<input id="actual-expenses" inputmode="decimal" required></label>
+          <button class="button primary" type="submit">Сохранить факт</button>
+        </form>
+        <p id="actual-message" class="notice" role="status"></p>
+        <div id="actual-results" class="table-wrap" tabindex="0" role="region" aria-label="Сравнение плана и факта" hidden></div>
+        <p id="actual-forecast" class="subtle budget-forecast"></p>
+      </section>
+    </div>
   </main>
 </body>
 </html>
