@@ -76,7 +76,7 @@
     <div id="budget-tools" hidden>
       <section class="card budget-card budget-tool" aria-labelledby="payday-title">
         <h2 id="payday-title">До ближайшего поступления</h2>
-        <p class="subtle">Введи текущий остаток. Трекер учтёт предстоящие траты с сегодняшнего дня до даты следующего дохода. Если сегодняшний расход уже оплачен, результат будет консервативным. Платежи, внесённые в историю долгов, уже учтены.</p>
+        <p class="subtle">Введи текущий остаток с учётом уже полученных доходов и оплаченных расходов. План пропускает отмеченные в календаре операции и платежи, внесённые в историю долгов.</p>
         <form id="payday-form" class="budget-inline">
           <label>Текущий остаток, ₽<input id="payday-balance" inputmode="decimal" required></label>
           <button class="button primary" type="submit">Рассчитать до поступления</button>
@@ -92,6 +92,7 @@
       <section class="card budget-card budget-tool" aria-labelledby="calendar-title">
         <h2 id="calendar-title">Календарь денег</h2>
         <p class="subtle">Укажи дни в строках бюджета. Календарь покажет, хватит ли денег к дате обязательного платежа. Остаток на начало месяца вводится отдельно.</p>
+        <p class="subtle">Отметь полученные доходы и оплаченные расходы. Повторное нажатие снимает отметку. Календарь показывает суммы по плановым датам, а расчёт до поступления пропускает отмеченные операции.</p>
         <form id="calendar-form" class="budget-inline">
           <label>Месяц<input id="calendar-month" type="month" required></label>
           <label>Остаток на начало месяца, ₽<input id="calendar-opening" inputmode="decimal" value="0" required></label>

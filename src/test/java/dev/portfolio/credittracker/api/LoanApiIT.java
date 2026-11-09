@@ -15,10 +15,12 @@ import org.springframework.test.web.servlet.ResultActions;
 import java.math.BigDecimal;
 import java.time.YearMonth;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import static org.hamcrest.Matchers.contains;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -97,7 +99,7 @@ class LoanApiIT {
     @BeforeEach void cleanDedicatedTestDatabase() {
         String database = jdbc.queryForObject("select current_database()", String.class);
         assertTrue(database != null && database.endsWith("_test"), "Tests must use a separate database ending in _test");
-        jdbc.execute("TRUNCATE TABLE payments, loans, monthly_budget, budget_actuals");
+        jdbc.execute("TRUNCATE TABLE payments, loans, monthly_budget, budget_actuals, budget_calendar_marks");
     }
     private String createLoan() throws Exception {
         String json = mvc.perform(post("/api/loans").contentType(APPLICATION_JSON).content(LOAN))
@@ -225,6 +227,41 @@ class LoanApiIT {
         mvc.perform(get("/api/budget/until-payday").param("balance", "4000")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.undatedExpenses").value(1))
                 .andExpect(jsonPath("$.extra").doesNotExist());
+    }
+
+    @Test void calendarMarksSkipPaidExpensesAndEarlyIncomeWithoutMarkingLaterOccurrences() throws Exception {
+        LocalDate today = LocalDate.now();
+        YearMonth month = YearMonth.from(today);
+        UUID expense = UUID.randomUUID();
+        UUID income = UUID.randomUUID();
+        UUID recurring = UUID.randomUUID();
+        String budget = """
+                {"incomes":[{"id":"%s","name":"Зарплата","amount":6000,"day":1}],
+                 "expenses":[{"id":"%s","name":"Аренда","amount":1000,"day":%s}],
+                 "oneOffs":[{"id":"%s","name":"Премия","amount":5000,"date":"%s","direction":"INCOME"}]}
+                """.formatted(recurring, expense, today.getDayOfMonth(), income, today.plusDays(1));
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content(budget)).andExpect(status().isOk());
+        String payday = "/api/budget/until-payday";
+        mvc.perform(get(payday).param("balance", "4000")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.nextIncomeDate").value(today.plusDays(1).toString()))
+                .andExpect(jsonPath("$.required").value(1000));
+        String expenseMark = "/api/budget/calendar/" + month + "/entries/" + expense;
+        String incomeMark = "/api/budget/calendar/" + YearMonth.from(today.plusDays(1)) + "/entries/" + income;
+        for (String path : List.of(expenseMark, incomeMark)) {
+            mvc.perform(put(path).contentType(APPLICATION_JSON).content("{\"completed\":true}"))
+                    .andExpect(status().isNoContent());
+        }
+        mvc.perform(get("/api/budget/calendar/" + month)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.rows[?(@.event.entryId == '%s')].completed".formatted(expense), contains(true)));
+        mvc.perform(get(payday).param("balance", "4000")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.nextIncomeDate").value(month.plusMonths(1).atDay(1).toString()))
+                .andExpect(jsonPath("$.required").value(0));
+        mvc.perform(get("/api/budget/calendar/" + month.plusMonths(1))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.rows[?(@.event.entryId == '%s')].completed".formatted(expense), contains(false)));
+        mvc.perform(put(expenseMark).contentType(APPLICATION_JSON).content("{\"completed\":false}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get(payday).param("balance", "4000")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.required").value(1000));
     }
 
     @Test void debtOverviewSumsBalancesAndGroupsOnlyPrincipalByActualPaymentMonth() throws Exception {

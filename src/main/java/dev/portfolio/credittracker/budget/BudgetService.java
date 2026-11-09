@@ -15,8 +15,10 @@ import java.time.YearMonth;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static dev.portfolio.credittracker.budget.BudgetController.*;
@@ -52,6 +54,12 @@ public class BudgetService {
             throw new CalculationException("Резерв на начало месяца не может превышать целевую сумму.");
         }
         for (var entry : budget.oneOffs()) validateMonth(YearMonth.from(entry.date()));
+        var ids = new HashSet<UUID>();
+        if (budget.incomes().stream().anyMatch(entry -> !ids.add(entry.id()))
+                || budget.expenses().stream().anyMatch(entry -> !ids.add(entry.id()))
+                || budget.oneOffs().stream().anyMatch(entry -> !ids.add(entry.id()))) {
+            throw new CalculationException("В бюджете повторяется идентификатор строки.");
+        }
         jdbc.sql("""
                 INSERT INTO monthly_budget(id, entries) VALUES (1, CAST(:entries AS jsonb))
                 ON CONFLICT (id) DO UPDATE SET entries = EXCLUDED.entries
@@ -90,14 +98,40 @@ public class BudgetService {
         }
         boolean incomplete = plan.status() == RepaymentPlanner.Status.LIMIT
                 && !month.isBefore(YearMonth.from(today).plusMonths(MAX_MONTHS));
-        return CashCalendar.build(month, openingBalance, budget, events, incomplete);
+        return CashCalendar.build(month, openingBalance, budget, events, incomplete, calendarMarks(month));
+    }
+
+    @Transactional
+    public void markCalendarEntry(YearMonth month, UUID id, boolean completed) {
+        validateMonth(month);
+        if (month.isBefore(YearMonth.now())) {
+            throw new CalculationException("Открой текущий или будущий месяц для отметки.");
+        }
+        var saved = jdbc.sql("SELECT entries::text FROM monthly_budget WHERE id = 1 FOR UPDATE")
+                .query(String.class).optional().map(value -> json.readValue(value, Budget.class));
+        if (saved.isEmpty() || CashCalendar.budgetEvents(month, saved.get()).stream()
+                .noneMatch(event -> id.equals(event.entryId()))) {
+            throw new CalculationException("Операция отсутствует в календаре. Обнови страницу.");
+        }
+        String sql = completed
+                ? "INSERT INTO budget_calendar_marks(entry_id, month) VALUES (:id, :month) ON CONFLICT DO NOTHING"
+                : "DELETE FROM budget_calendar_marks WHERE entry_id = :id AND month = :month";
+        jdbc.sql(sql).param("id", id).param("month", month.atDay(1)).update();
+    }
+
+    private Set<CashCalendar.Occurrence> calendarMarks(YearMonth firstMonth) {
+        return Set.copyOf(jdbc.sql("SELECT entry_id, month FROM budget_calendar_marks WHERE month >= :month")
+                .param("month", firstMonth.atDay(1))
+                .query((rs, row) -> new CashCalendar.Occurrence(rs.getObject(1, UUID.class),
+                        YearMonth.from(rs.getObject(2, LocalDate.class)))).list());
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public CashCalendar.PaydayPlan untilPayday(BigDecimal balance) {
         validateBalance(balance);
         LocalDate today = LocalDate.now();
-        return CashCalendar.untilPayday(today, balance, loadBudget(), minimumSchedule(today).months());
+        return CashCalendar.untilPayday(today, balance, loadBudget(), minimumSchedule(today).months(),
+                calendarMarks(YearMonth.from(today)));
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)

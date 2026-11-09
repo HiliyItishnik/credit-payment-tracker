@@ -10,6 +10,7 @@ let months = [];
 let shown = 0;
 let overview;
 let openedMonth;
+let paydayRevision = 0;
 const now = new Date();
 const currentMonth = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
 const dayFormat = new Intl.DateTimeFormat('ru-RU', {day: 'numeric', month: 'long'});
@@ -28,7 +29,7 @@ async function budgetApi(options, path = '') {
     const error = await response.json().catch(() => ({}));
     throw new Error(error.detail || 'Не удалось загрузить или сохранить бюджет.');
   }
-  return response.json();
+  return response.status === 204 ? null : response.json();
 }
 
 function markEdited() {
@@ -40,6 +41,7 @@ function markEdited() {
 function addEntry(group, entry = {}, focus = false) {
   const oneOff = group === 'oneOffs';
   const row = element('div', '', oneOff ? 'budget-entry budget-one-off' : 'budget-entry');
+  row.dataset.entryId = entry.id ?? '';
   const nameLabel = element('label', 'Название');
   const name = element('input');
   name.name = 'name';
@@ -102,14 +104,15 @@ function readEntries(group) {
   return [...$(group).children].map(row => {
     const name = row.querySelector('[name=name]').value.trim();
     const amount = row.querySelector('[name=amount]').value.trim().replace(',', '.');
+    const id = row.dataset.entryId || null;
     if (!name || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0 || Number(amount) > 1e9) {
       throw new Error('Укажи название и сумму от 0,01 до 1 млрд ₽ с точностью до копеек.');
     }
     if (group === 'oneOffs') {
-      return {name, amount, date: row.querySelector('[name=date]').value, direction: row.querySelector('[name=direction]').value};
+      return {id, name, amount, date: row.querySelector('[name=date]').value, direction: row.querySelector('[name=direction]').value};
     }
     const day = row.querySelector('[name=day]').value;
-    return {name, amount, day: day ? Number(day) : null};
+    return {id, name, amount, day: day ? Number(day) : null};
   });
 }
 
@@ -186,7 +189,11 @@ function tableInto(id, columns, rows) {
   const body = table.createTBody();
   for (const values of rows) {
     const row = body.insertRow();
-    for (const value of values) row.insertCell().textContent = value;
+    for (const value of values) {
+      const cell = row.insertCell();
+      if (typeof value === 'string') cell.textContent = value;
+      else cell.append(value);
+    }
   }
   $(id).replaceChildren(table);
   $(id).hidden = false;
@@ -200,6 +207,9 @@ function describeForecast(plan) {
 
 function renderOverview(result) {
   overview = result;
+  for (const group of groups) {
+    result.budget[group].forEach((entry, index) => { $(group).children[index].dataset.entryId = entry.id; });
+  }
   const strategies = [['Сначала дорогие', result.plan], ['Сначала маленькие', result.alternative]];
   tableInto('strategy-comparison', ['Стратегия', 'Погашение всех долгов', 'Всего процентов'],
     strategies.map(([name, plan]) => [name, describeForecast(plan), plan.payoffMonth ? money(plan.interest) : '—']));
@@ -260,6 +270,7 @@ function setToolBusy(form, busy) {
 }
 
 function resetPayday() {
+  paydayRevision++;
   $('payday-message').textContent = '';
   $('payday-message').classList.remove('error');
   $('payday-totals').hidden = true;
@@ -272,10 +283,12 @@ $('payday-form').addEventListener('submit', async event => {
   const form = event.currentTarget;
   const message = $('payday-message');
   resetPayday();
+  const revision = paydayRevision;
   setToolBusy(form, true);
   try {
     const query = new URLSearchParams({balance: amountInput('payday-balance')});
     const plan = await budgetApi(undefined, '/until-payday?' + query);
+    if (revision !== paydayRevision) return;
     if (!plan.nextIncomeDate) {
       message.textContent = 'Добавь день регулярного дохода или дату будущего разового поступления.';
       return;
@@ -303,6 +316,7 @@ $('payday-form').addEventListener('submit', async event => {
       ]));
     }
   } catch (error) {
+    if (revision !== paydayRevision) return;
     message.classList.add('error');
     message.textContent = error.message;
   } finally {
@@ -322,17 +336,15 @@ $('actual-month').min = '1900-01';
 $('calendar-month').max = '2200-12';
 $('budget-strategy').addEventListener('change', event => renderPlan(overview[event.target.value]));
 
-$('calendar-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  const form = event.currentTarget;
+async function loadCalendar(month, opening) {
+  const form = $('calendar-form');
   const message = $('calendar-message');
   $('calendar-results').hidden = true;
   message.classList.remove('error');
   message.textContent = 'Рассчитываем календарь…';
   setToolBusy(form, true);
   try {
-    const month = $('calendar-month').value;
-    const query = new URLSearchParams({openingBalance: amountInput('calendar-opening')});
+    const query = new URLSearchParams({openingBalance: opening});
     const calendar = await budgetApi(undefined, '/calendar/' + month + '?' + query);
     const {rows, firstGap, undatedEntries, incompleteDebtSchedule, reserveGap, reserve, openingBalance} = calendar;
     const warnings = [];
@@ -345,9 +357,10 @@ $('calendar-form').addEventListener('submit', async event => {
     message.textContent = warnings.join(' ') || (rows.length ? 'По указанным датам денег хватает.' : 'На этот месяц событий нет.');
     if (rows.length) {
       const kinds = {INCOME: 'Доход', EXPENSE: 'Расход', PAYMENT: 'Платёж по графику', RECORDED_PAYMENT: 'Записанный платёж'};
-      tableInto('calendar-results', ['Дата', 'Операция', 'Сумма', 'Остаток'], rows.map(({event, balance}) => [
+      tableInto('calendar-results', ['Дата', 'Операция', 'Сумма', 'Остаток', 'Статус'], rows.map(({event, balance, completed}) => [
         dayName(event.date), kinds[event.kind] + ' · ' + event.name,
-        money(event.kind === 'INCOME' ? event.amount : -event.amount), money(balance)
+        money(event.kind === 'INCOME' ? event.amount : -event.amount), money(balance),
+        calendarMarkButton(month, opening, event, completed)
       ]));
     }
   } catch (error) {
@@ -356,6 +369,53 @@ $('calendar-form').addEventListener('submit', async event => {
   } finally {
     setToolBusy(form, false);
   }
+}
+
+function calendarMarkButton(month, opening, event, completed) {
+  if (!event.entryId) return event.kind === 'RECORDED_PAYMENT' ? 'Оплачено' : 'По графику';
+  const label = event.kind === 'INCOME' ? 'Получено' : 'Оплачено';
+  const action = event.kind === 'INCOME' ? 'Отметить получение' : 'Отметить оплату';
+  const button = element('button', completed ? label + ' ✓' : action, 'button secondary');
+  button.type = 'button';
+  button.dataset.entryId = event.entryId;
+  button.setAttribute('aria-label', label + ' · ' + event.name + ' · ' + dayName(event.date));
+  button.setAttribute('aria-pressed', String(completed));
+  button.addEventListener('click', async () => {
+    const buttons = $('calendar-results').querySelectorAll('button');
+    const form = $('calendar-form');
+    for (const control of buttons) control.disabled = true;
+    setToolBusy(form, true);
+    try {
+      await budgetApi(jsonPut({completed: !completed}), '/calendar/' + month + '/entries/' + event.entryId);
+      resetPayday();
+      await loadCalendar(month, opening);
+      const updated = [...$('calendar-results').querySelectorAll('button')]
+        .find(control => control.dataset.entryId === event.entryId);
+      updated?.focus();
+    } catch (error) {
+      $('calendar-message').classList.add('error');
+      $('calendar-message').textContent = error.message;
+      button.focus();
+    } finally {
+      for (const control of buttons) control.disabled = false;
+      setToolBusy(form, false);
+    }
+  });
+  return button;
+}
+
+$('calendar-form').addEventListener('submit', event => {
+  event.preventDefault();
+  try {
+    loadCalendar($('calendar-month').value, amountInput('calendar-opening'));
+  } catch (error) {
+    $('calendar-message').classList.add('error');
+    $('calendar-message').textContent = error.message;
+  }
+});
+$('calendar-form').addEventListener('input', () => {
+  $('calendar-results').hidden = true;
+  $('calendar-message').textContent = '';
 });
 
 $('actual-month').addEventListener('input', resetReview);

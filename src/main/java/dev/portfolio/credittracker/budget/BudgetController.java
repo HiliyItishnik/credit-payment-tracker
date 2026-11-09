@@ -18,6 +18,7 @@ import java.math.BigDecimal;
 import java.time.YearMonth;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/budget")
@@ -25,13 +26,17 @@ public class BudgetController {
     public record Entry(@NotBlank @Size(max = 80) String name,
                         @NotNull @DecimalMin("0.01") @DecimalMax("1000000000")
                         @Digits(integer = 10, fraction = 2) BigDecimal amount,
-                        @Min(1) @Max(31) Integer day) {}
+                        @Min(1) @Max(31) Integer day, UUID id) {
+        public Entry { if (id == null) id = UUID.randomUUID(); }
+    }
 
     public enum Direction { INCOME, EXPENSE }
     public record OneOff(@NotBlank @Size(max = 80) String name,
                          @NotNull @DecimalMin("0.01") @DecimalMax("1000000000")
                          @Digits(integer = 10, fraction = 2) BigDecimal amount,
-                         @NotNull LocalDate date, @NotNull Direction direction) {}
+                         @NotNull LocalDate date, @NotNull Direction direction, UUID id) {
+        public OneOff { if (id == null) id = UUID.randomUUID(); }
+    }
 
     public record Budget(@NotNull @Size(max = 50) List<@NotNull @Valid Entry> incomes,
                          @NotNull @Size(max = 50) List<@NotNull @Valid Entry> expenses,
@@ -58,6 +63,7 @@ public class BudgetController {
                               Forecast baseline, Forecast adjusted) {}
     public record PrincipalPaid(YearMonth month, BigDecimal amount) {}
     public record DebtOverview(YearMonth month, BigDecimal balance, BigDecimal due, List<PrincipalPaid> principalPaid) {}
+    public record CalendarMark(@NotNull Boolean completed) {}
 
     private final BudgetService service;
 
@@ -79,6 +85,14 @@ public class BudgetController {
     public CashCalendar.Result calendar(@PathVariable @DateTimeFormat(pattern = "uuuu-MM") YearMonth month,
                                         @RequestParam(defaultValue = "0") BigDecimal openingBalance) {
         return service.calendar(month, openingBalance);
+    }
+
+    @PutMapping("/calendar/{month}/entries/{id}")
+    public ResponseEntity<Void> markCalendarEntry(
+            @PathVariable @DateTimeFormat(pattern = "uuuu-MM") YearMonth month,
+            @PathVariable UUID id, @Valid @RequestBody CalendarMark mark) {
+        service.markCalendarEntry(month, id, mark.completed());
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/until-payday")

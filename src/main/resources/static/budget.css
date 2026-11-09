@@ -25,6 +25,7 @@
 .budget-entry input[type=number]{padding-inline:6px}
 .budget-one-off{grid-template-columns:minmax(0,1.3fr) minmax(90px,1fr) minmax(135px,1fr) minmax(110px,1fr) auto}
 .budget-one-off select{margin-top:6px}
+#calendar-results button[aria-pressed="true"]{background:#e7f2dd;border-color:#87a86c;color:#284c24}
 @media(max-width:740px){
   .budget-columns,.budget-totals{grid-template-columns:1fr}
   .budget-page{padding-inline:16px}
