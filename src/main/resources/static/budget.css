@@ -1,0 +1,22 @@
+.budget-page{max-width:1050px;margin:0 auto;padding:0 24px 40px}
+.budget-columns,.budget-totals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.budget-card{padding:22px;min-width:0;margin:0}
+.budget-card legend{font-weight:650;padding:0 6px}
+.budget-entries,.budget-months{display:grid;gap:12px;margin:16px 0}
+.budget-entry{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(90px,1fr) auto;align-items:end;gap:8px}
+.budget-entry label{margin:0}
+.budget-entry input{margin-top:6px}
+.budget-remove{padding:8px 10px;font-size:18px}
+.budget-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:20px 0}
+.budget-totals{grid-template-columns:repeat(3,minmax(0,1fr));margin:18px 0}
+.budget-totals div{background:#f1f6e7;border-radius:10px;padding:14px}
+.budget-totals dt{color:var(--muted);font-size:12px}
+.budget-totals dd{margin:7px 0 0;font-size:20px;font-weight:650;overflow-wrap:anywhere}
+.budget-month{border:1px solid var(--line);border-radius:9px;padding:12px}
+.budget-month summary{cursor:pointer;font-size:14px;font-weight:600}
+.budget-month .subtle{margin:8px 0}
+@media(max-width:740px){
+  .budget-columns,.budget-totals{grid-template-columns:1fr}
+  .budget-page{padding-inline:16px}
+  .budget-card{padding:14px}
+}

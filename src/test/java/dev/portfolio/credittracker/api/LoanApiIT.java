@@ -13,6 +13,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import java.math.BigDecimal;
+import java.time.YearMonth;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -95,7 +96,7 @@ class LoanApiIT {
     @BeforeEach void cleanDedicatedTestDatabase() {
         String database = jdbc.queryForObject("select current_database()", String.class);
         assertTrue(database != null && database.endsWith("_test"), "Tests must use a separate database ending in _test");
-        jdbc.execute("TRUNCATE TABLE payments, loans");
+        jdbc.execute("TRUNCATE TABLE payments, loans, monthly_budget");
     }
     private String createLoan() throws Exception {
         String json = mvc.perform(post("/api/loans").contentType(APPLICATION_JSON).content(LOAN))
@@ -115,6 +116,61 @@ class LoanApiIT {
     @Test void servesTheBrowserInterface() throws Exception {
         mvc.perform(get("/")).andExpect(status().isOk()).andExpect(forwardedUrl("index.html"));
         mvc.perform(get("/index.html")).andExpect(status().isOk()).andExpect(content().contentTypeCompatibleWith("text/html"));
+        mvc.perform(get("/budget.html")).andExpect(status().isOk()).andExpect(content().contentTypeCompatibleWith("text/html"));
+    }
+
+    @Test void persistsMonthlyBudgetAndAppliesExtraToCostliestDebtWithoutRecordingPayments() throws Exception {
+        String loan = createLoan();
+        savedPayment(loan, "10000");
+        createDebt(CARD);
+        var body = """
+                {"incomes":[{"name":"Зарплата","amount":"40000"}],
+                 "expenses":[{"name":"Аренда","amount":17000},{"name":"Транспорт","amount":3000}]}
+                """;
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.plan.status").value("COMPLETE"))
+                .andExpect(jsonPath("$.plan.available").value(20000))
+                .andExpect(jsonPath("$.plan.months[0].month").value(YearMonth.now().toString()))
+                .andExpect(jsonPath("$.plan.months[0].minimum").value(15000))
+                .andExpect(jsonPath("$.plan.months[0].total").value(20000))
+                .andExpect(jsonPath("$.plan.months[0].payments[0].name").value("Карта"))
+                .andExpect(jsonPath("$.plan.months[0].payments[0].extra").value(5000))
+                .andExpect(jsonPath("$.plan.months[0].payments[1].balance").value(81910));
+        mvc.perform(get("/api/budget")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.budget.expenses[1].name").value("Транспорт"))
+                .andExpect(jsonPath("$.plan.available").value(20000));
+        assertEquals(1, countPayments());
+    }
+
+    @Test void flagsShortfallWhenLaterDebtStartsAndDoesNotSpendFutureIncomeEarly() throws Exception {
+        YearMonth now = YearMonth.now();
+        createDebt("""
+                {"name":"Первый","principal":300,"annualRate":0,"monthlyPayment":300,"firstPaymentDate":"%s"}
+                """.formatted(now.atDay(1)));
+        createDebt("""
+                {"name":"Второй","principal":1000,"annualRate":0,"monthlyPayment":1000,"firstPaymentDate":"%s"}
+                """.formatted(now.plusMonths(1).atDay(1)));
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("""
+                {"incomes":[{"name":"Доход","amount":1000}],"expenses":[{"name":"Еда","amount":400}]}
+                """)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.plan.status").value("SHORTFALL"))
+                .andExpect(jsonPath("$.plan.months.length()").value(1))
+                .andExpect(jsonPath("$.plan.months[0].total").value(300))
+                .andExpect(jsonPath("$.plan.months[0].remaining").value(300))
+                .andExpect(jsonPath("$.plan.shortfall.month").value(now.plusMonths(1).toString()))
+                .andExpect(jsonPath("$.plan.shortfall.missing").value(400));
+    }
+
+    @Test void rejectsInvalidBudgetEntriesAndShowsExpensesWithoutDebts() throws Exception {
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("""
+                {"incomes":[{"name":"Доход","amount":-1}],"expenses":[]}
+                """)).andExpect(status().isBadRequest());
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("""
+                {"incomes":[],"expenses":[{"name":"Еда","amount":1000}]}
+                """)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.plan.status").value("NO_DEBTS"))
+                .andExpect(jsonPath("$.plan.available").value(-1000));
     }
     @Test void createsLoanAndCorrectFirstScheduleRow() throws Exception {
         String id = createLoan();

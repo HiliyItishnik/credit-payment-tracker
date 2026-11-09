@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Бюджет и план погашения — Платёж</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/budget.css">
+  <script src="/budget.js" defer></script>
+</head>
+<body>
+  <main class="budget-page">
+    <header class="topbar"><a href="/">← К долгам</a><span>Платёж</span></header>
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">ЛИЧНЫЕ ФИНАНСЫ</p>
+        <h1>Бюджет и план погашения</h1>
+        <p class="subtle">Укажи суммы за обычный месяц. Платежи по долгам трекер возьмёт из их графиков.</p>
+      </div>
+    </div>
+    <p id="budget-loading" class="loading" role="status">Загружаем бюджет…</p>
+    <p id="budget-error" class="notice error" role="alert" hidden></p>
+    <form id="budget-form" hidden>
+      <div class="budget-columns">
+        <fieldset class="card budget-card">
+          <legend>Доходы</legend>
+          <p class="subtle">Зарплата после налогов и другие регулярные поступления.</p>
+          <div id="incomes" class="budget-entries"></div>
+          <button id="add-income" class="button secondary" type="button">＋ Добавить доход</button>
+        </fieldset>
+        <fieldset class="card budget-card">
+          <legend>Обязательные расходы</legend>
+          <p class="subtle">Еда, транспорт, аренда, коммунальные услуги и другие необходимые траты.</p>
+          <div id="expenses" class="budget-entries"></div>
+          <button id="add-expense" class="button secondary" type="button">＋ Добавить расход</button>
+        </fieldset>
+      </div>
+      <div class="budget-actions">
+        <button id="budget-save" class="button primary" type="submit">Сохранить и рассчитать план</button>
+        <p id="budget-status" class="subtle" role="status"></p>
+      </div>
+    </form>
+    <section id="budget-result" class="card budget-card" aria-labelledby="budget-result-title" hidden>
+      <h2 id="budget-result-title">План погашения</h2>
+      <dl class="budget-totals">
+        <div><dt>Доходы в месяц</dt><dd id="total-income"></dd></div>
+        <div><dt>Обязательные расходы</dt><dd id="total-expenses"></dd></div>
+        <div><dt>Остаток после расходов</dt><dd id="total-available"></dd></div>
+      </dl>
+      <p id="plan-status" class="notice" role="status"></p>
+      <p class="subtle">План использует весь остаток месяца на долги. Если нужен резерв, добавь его в расходы. Доплата идёт туда, где проценты за период выше относительно остатка долга. Платежи из прошлых месяцев сдвигаются на текущий месяц, без расчёта штрафов. Свободные деньги не переносятся между месяцами.</p>
+      <div id="budget-months" class="budget-months"></div>
+      <button id="budget-more" class="button secondary" type="button" hidden>Показать ещё месяцы</button>
+    </section>
+  </main>
+</body>
+</html>
