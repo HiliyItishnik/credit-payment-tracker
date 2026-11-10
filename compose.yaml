@@ -1,4 +1,18 @@
 services:
+  app:
+    build: .
+    profiles: [app]
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/${DB_NAME:-credit_tracker}
+      DB_USERNAME: ${DB_USERNAME:-tracker}
+      DB_PASSWORD: ${DB_PASSWORD:-tracker_local}
+      TZ: ${APP_TIMEZONE:-Europe/Moscow}
+    ports:
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
   db:
     image: postgres:17
     environment:

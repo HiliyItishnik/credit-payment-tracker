@@ -44,6 +44,20 @@ docker compose down
 
 Данные находятся в Docker volume `postgres_data`. Команда `docker compose down -v` удаляет этот том и все кредиты — она нужна только для намеренного сброса базы.
 
+## Приложение и база в Docker
+
+Для запуска приложения без установки JDK и Maven выполни:
+
+```bash
+docker compose --profile app up -d --build --wait
+```
+
+Открой http://localhost:8080. Если порты заняты, задай `APP_PORT` и `DB_PORT` в `.env`. Контейнер приложения подключается к базе по внутренней сети Docker. `APP_TIMEZONE` задаёт календарный часовой пояс, по умолчанию `Europe/Moscow`.
+
+Compose ждёт готовности базы и затем готовности приложения. Проверка `/actuator/health/readiness` учитывает доступность PostgreSQL. Сборка образа запускает unit-тесты. GitHub Actions дополнительно собирает образ, запускает оба контейнера и проверяет HTTP API.
+
+Для остановки выполни `docker compose --profile app down`. Команда `docker compose up -d --wait` запускает базу для работы из IDE.
+
 ## Запуск в IntelliJ IDEA
 
 1. Распакуй архив и открой папку `credit-payment-tracker` через **File → Open**. Если IDE предлагает вариант, выбери Maven project.

@@ -38,3 +38,34 @@ jobs:
           node-version: '24'
       - name: Browser payment retry checks
         run: node --test src/test/js/app.test.cjs
+      - name: Check browser scripts
+        run: |
+          node --check src/main/resources/static/app.js
+          node --check src/main/resources/static/budget.js
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and start application with PostgreSQL
+        env:
+          COMPOSE_PROJECT_NAME: tracker-ci
+          APP_PORT: '18080'
+          DB_PORT: '15432'
+          DB_PASSWORD: tracker_ci
+        run: docker compose --profile app up -d --build --wait --wait-timeout 180
+      - name: Verify HTTP and database readiness
+        run: |
+          curl --fail http://127.0.0.1:18080/actuator/health/readiness
+          curl --fail http://127.0.0.1:18080/api/loans
+          curl --fail http://127.0.0.1:18080/budget.html > /dev/null
+      - name: Show container logs
+        if: failure()
+        env:
+          COMPOSE_PROJECT_NAME: tracker-ci
+        run: docker compose --profile app logs --no-color
+      - name: Stop test containers
+        if: always()
+        env:
+          COMPOSE_PROJECT_NAME: tracker-ci
+        run: docker compose --profile app down --volumes
