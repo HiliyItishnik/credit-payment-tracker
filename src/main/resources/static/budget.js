@@ -9,6 +9,7 @@ const groups = ['incomes', 'expenses', 'oneOffs'];
 let months = [];
 let shown = 0;
 let overview;
+let budgetVersion;
 let openedMonth;
 let paydayRevision = 0;
 const now = new Date();
@@ -207,6 +208,7 @@ function describeForecast(plan) {
 
 function renderOverview(result) {
   overview = result;
+  budgetVersion = result.budget.version;
   for (const group of groups) {
     result.budget[group].forEach((entry, index) => { $(group).children[index].dataset.entryId = entry.id; });
   }
@@ -480,6 +482,7 @@ $('budget-form').addEventListener('submit', async event => {
   setBusy(true);
   try {
     const budget = {
+      version: budgetVersion,
       incomes: readEntries('incomes'), expenses: readEntries('expenses'), oneOffs: readEntries('oneOffs'),
       reserve: amountInput('budget-reserve'), openingReserve: amountInput('budget-opening-reserve')
     };

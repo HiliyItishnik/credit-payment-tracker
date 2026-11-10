@@ -3,6 +3,8 @@ package dev.portfolio.credittracker.budget;
 import dev.portfolio.credittracker.loan.LoanRepository;
 import dev.portfolio.credittracker.loan.PaymentRepository;
 import dev.portfolio.credittracker.domain.CalculationException;
+import dev.portfolio.credittracker.api.ApiException;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -10,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.sql.Types;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.ZoneId;
@@ -62,10 +65,19 @@ public class BudgetService {
             throw new CalculationException("В бюджете повторяется идентификатор строки.");
         }
         jdbc.sql("""
-                INSERT INTO monthly_budget(id, entries) VALUES (1, CAST(:entries AS jsonb))
-                ON CONFLICT (id) DO UPDATE SET entries = EXCLUDED.entries
-                """).param("entries", json.writeValueAsString(budget)).update();
-        return overview(budget);
+                INSERT INTO monthly_budget(id, entries)
+                VALUES (1, '{"incomes":[],"expenses":[]}'::jsonb)
+                ON CONFLICT (id) DO NOTHING
+                """).update();
+        long version = jdbc.sql("""
+                UPDATE monthly_budget SET entries = CAST(:entries AS jsonb), version = version + 1
+                WHERE id = 1 AND (:version IS NULL OR version = :version)
+                RETURNING version
+                """).param("entries", json.writeValueAsString(budget))
+                .param("version", budget.version(), Types.BIGINT)
+                .query(Long.class).optional().orElseThrow(() -> new ApiException(HttpStatus.CONFLICT,
+                        "Бюджет уже изменён в другой вкладке. Скопируй свои правки, обнови страницу и внеси их заново."));
+        return overview(budget.withVersion(version));
     }
 
     private Overview overview(Budget budget) {
@@ -303,9 +315,9 @@ public class BudgetService {
     }
 
     private Budget loadBudget() {
-        return jdbc.sql("SELECT entries::text FROM monthly_budget WHERE id = 1")
-                .query(String.class).optional().map(value -> json.readValue(value, Budget.class))
-                .orElseGet(() -> new Budget(List.of(), List.of(), List.of(), ZERO, ZERO));
+        return jdbc.sql("SELECT entries::text, version FROM monthly_budget WHERE id = 1")
+                .query((rs, row) -> json.readValue(rs.getString(1), Budget.class).withVersion(rs.getLong(2)))
+                .optional().orElseGet(() -> new Budget(List.of(), List.of(), List.of(), ZERO, ZERO).withVersion(0));
     }
 
     private Totals plannedTotals(Budget budget, YearMonth month) {

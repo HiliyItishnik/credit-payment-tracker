@@ -42,7 +42,17 @@ public class BudgetController {
                          @NotNull @Size(max = 50) List<@NotNull @Valid Entry> expenses,
                          @Size(max = 100) List<@NotNull @Valid OneOff> oneOffs,
                          @DecimalMin("0") @DecimalMax("50000000000") @Digits(integer = 11, fraction = 2) BigDecimal reserve,
-                         @DecimalMin("0") @DecimalMax("50000000000") @Digits(integer = 11, fraction = 2) BigDecimal openingReserve) {
+                         @DecimalMin("0") @DecimalMax("50000000000") @Digits(integer = 11, fraction = 2) BigDecimal openingReserve,
+                         @Min(0) Long version) {
+        public Budget(List<Entry> incomes, List<Entry> expenses, List<OneOff> oneOffs,
+                      BigDecimal reserve, BigDecimal openingReserve) {
+            this(incomes, expenses, oneOffs, reserve, openingReserve, null);
+        }
+
+        Budget withVersion(long value) {
+            return new Budget(incomes, expenses, oneOffs, reserve, openingReserve, value);
+        }
+
         public Budget {
             if (oneOffs == null) oneOffs = List.of();
             if (reserve == null) reserve = BigDecimal.ZERO;

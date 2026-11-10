@@ -232,6 +232,56 @@ class LoanApiIT {
                 .andExpect(jsonPath("$.extra").doesNotExist());
     }
 
+    @Test void staleBudgetSaveIsRejectedWithoutLosingDataOrCalendarMarks() throws Exception {
+        String initial = mvc.perform(get("/api/budget")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.budget.version").value(0))
+                .andReturn().getResponse().getContentAsString();
+        String empty = new tools.jackson.databind.ObjectMapper().writeValueAsString(JsonPath.read(initial, "$.budget"));
+        String saved = mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content(empty))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.budget.version").value(1))
+                .andReturn().getResponse().getContentAsString();
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content(empty))
+                .andExpect(status().isConflict());
+        UUID rent = UUID.randomUUID();
+        String changed = """
+                {"version":1,"incomes":[],"expenses":[{"id":"%s","name":"Аренда","amount":1000,"day":1}]}
+                """.formatted(rent);
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content(changed))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.budget.version").value(2));
+        String mark = "/api/budget/calendar/" + YearMonth.now() + "/entries/" + rent;
+        mvc.perform(put(mark).contentType(APPLICATION_JSON).content("{\"completed\":true}"))
+                .andExpect(status().isNoContent());
+        String stale = new tools.jackson.databind.ObjectMapper().writeValueAsString(JsonPath.read(saved, "$.budget"));
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content(stale))
+                .andExpect(status().isConflict()).andExpect(content().contentTypeCompatibleWith("application/problem+json"));
+        mvc.perform(get("/api/budget")).andExpect(jsonPath("$.budget.version").value(2))
+                .andExpect(jsonPath("$.budget.expenses[0].id").value(rent.toString()));
+        mvc.perform(get("/api/budget/calendar/" + YearMonth.now()))
+                .andExpect(jsonPath("$.rows[0].completed").value(true));
+    }
+
+    @Test void onlyOneConcurrentSaveCanReplaceTheSameBudgetVersion() throws Exception {
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("{\"incomes\":[],\"expenses\":[]}"))
+                .andExpect(status().isOk());
+        String body = "{\"version\":1,\"incomes\":[],\"expenses\":[],\"reserve\":5000}";
+        var gate = new CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<Integer> save = () -> {
+                gate.await();
+                return mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content(body))
+                        .andReturn().getResponse().getStatus();
+            };
+            var one = executor.submit(save);
+            var two = executor.submit(save);
+            gate.countDown();
+            var statuses = java.util.stream.Stream.of(one.get(15, TimeUnit.SECONDS), two.get(15, TimeUnit.SECONDS))
+                    .sorted().toList();
+            assertEquals(List.of(200, 409), statuses);
+        }
+        mvc.perform(get("/api/budget")).andExpect(jsonPath("$.budget.version").value(2))
+                .andExpect(jsonPath("$.budget.reserve").value(5000));
+    }
+
     @Test void calendarMarksSkipPaidExpensesAndEarlyIncomeWithoutMarkingLaterOccurrences() throws Exception {
         LocalDate today = LocalDate.now();
         YearMonth month = YearMonth.from(today);
