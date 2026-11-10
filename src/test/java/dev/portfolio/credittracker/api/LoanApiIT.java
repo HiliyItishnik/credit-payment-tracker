@@ -1,6 +1,8 @@
 package dev.portfolio.credittracker.api;
 
 import com.jayway.jsonpath.JsonPath;
+import jakarta.persistence.EntityManagerFactory;
+import org.hibernate.SessionFactory;
 import dev.portfolio.credittracker.api.LoanDtos.RecordPayment;
 import dev.portfolio.credittracker.loan.LoanService;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,6 +35,7 @@ class LoanApiIT {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired LoanService service;
+    @Autowired EntityManagerFactory entityManagerFactory;
     private static final String LOAN = """
             {"name":"Кредит на ремонт","principal":100000.00,"annualRate":12,
              "monthlyPayment":10000.00,"firstPaymentDate":"2026-01-31"}
@@ -493,6 +496,31 @@ class LoanApiIT {
                 .andExpect(jsonPath("$[0].id").value(kept));
         mvc.perform(get("/api/loans/" + kept)).andExpect(jsonPath("$.payments.length()").value(1));
         assertEquals(1, countPayments());
+    }
+
+    @Test void loadingManyLoansUsesABoundedNumberOfQueries() throws Exception {
+        for (int index = 0; index < 6; index++) {
+            String id = createLoan();
+            if (index % 2 == 0) {
+                savedPayment(id, "10000");
+                savedPayment(id, "10000");
+            }
+        }
+        var statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        statistics.setStatisticsEnabled(true);
+        try {
+            statistics.clear();
+            mvc.perform(get("/api/loans")).andExpect(status().isOk())
+                    .andExpect(jsonPath("$[?(@.balance == 81910)]", org.hamcrest.Matchers.hasSize(3)))
+                    .andExpect(jsonPath("$[?(@.balance == 100000)]", org.hamcrest.Matchers.hasSize(3)));
+            assertTrue(statistics.getPrepareStatementCount() <= 2, "Loan list must avoid per-loan queries");
+            statistics.clear();
+            mvc.perform(get("/api/budget/debt-overview")).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.balance").value(545730));
+            assertTrue(statistics.getPrepareStatementCount() <= 2, "Budget must avoid per-loan queries");
+        } finally {
+            statistics.setStatisticsEnabled(false);
+        }
     }
 
     @Test void keepsHistoriesOfDifferentLoansSeparate() throws Exception {

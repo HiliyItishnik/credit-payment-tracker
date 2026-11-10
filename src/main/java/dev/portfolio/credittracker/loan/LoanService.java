@@ -7,10 +7,12 @@ import dev.portfolio.credittracker.domain.CalculationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import static dev.portfolio.credittracker.domain.AmortizationCalculator.ZERO;
 
 @Service
@@ -40,11 +42,13 @@ public class LoanService {
         return detail(loans.save(loan), List.of());
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public List<LoanSummary> list() {
+        var latest = payments.findLatestForAllLoans().stream()
+                .collect(Collectors.toMap(PaymentRepository.LatestPayment::getLoanId, payment -> payment));
         return loans.findAllByOrderByCreatedAtAsc().stream().map(loan -> {
-            BigDecimal balance = payments.findFirstByLoanIdOrderByInstallmentNumberDesc(loan.getId())
-                    .map(Payment::getBalance).orElse(loan.getPrincipal());
+            var payment = latest.get(loan.getId());
+            BigDecimal balance = payment == null ? loan.getPrincipal() : payment.getBalance();
             return new LoanSummary(loan.getId(), loan.getName(), loan.getPrincipal(), balance, loan.getAnnualRate(), loan.getDebtType());
         }).toList();
     }

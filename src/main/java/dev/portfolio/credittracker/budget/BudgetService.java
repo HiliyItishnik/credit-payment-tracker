@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static dev.portfolio.credittracker.budget.BudgetController.*;
 import static dev.portfolio.credittracker.domain.AmortizationCalculator.ZERO;
@@ -255,6 +256,8 @@ public class BudgetService {
     }
 
     private List<RepaymentPlanner.Debt> activeDebts() {
+        var latest = payments.findLatestForAllLoans().stream()
+                .collect(Collectors.toMap(PaymentRepository.LatestPayment::getLoanId, payment -> payment));
         var lastPaidDates = new HashMap<UUID, YearMonth>();
         jdbc.sql("""
                 SELECT loan_id, MAX(COALESCE(paid_on, CAST(recorded_at AT TIME ZONE :zone AS date)))
@@ -263,10 +266,10 @@ public class BudgetService {
                 .query((rs, row) -> Map.entry(rs.getObject(1, UUID.class), YearMonth.from(rs.getObject(2, LocalDate.class))))
                 .list().forEach(entry -> lastPaidDates.put(entry.getKey(), entry.getValue()));
         return loans.findAllByOrderByCreatedAtAsc().stream().map(loan -> {
-            var last = payments.findFirstByLoanIdOrderByInstallmentNumberDesc(loan.getId());
+            var last = latest.get(loan.getId());
             return new RepaymentPlanner.Debt(loan.getId(), loan.getName(), loan.terms(),
-                    last.map(payment -> payment.getBalance()).orElse(loan.getPrincipal()),
-                    last.map(payment -> payment.getInstallmentNumber()).orElse(0),
+                    last == null ? loan.getPrincipal() : last.getBalance(),
+                    last == null ? 0 : last.getInstallmentNumber(),
                     lastPaidDates.get(loan.getId()));
         }).toList();
     }
