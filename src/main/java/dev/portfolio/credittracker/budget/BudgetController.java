@@ -26,8 +26,12 @@ public class BudgetController {
     public record Entry(@NotBlank @Size(max = 80) String name,
                         @NotNull @DecimalMin("0.01") @DecimalMax("1000000000")
                         @Digits(integer = 10, fraction = 2) BigDecimal amount,
-                        @Min(1) @Max(31) Integer day, UUID id) {
+                        @Min(1) @Max(31) Integer day, UUID id, YearMonth fromMonth, YearMonth untilMonth) {
         public Entry { if (id == null) id = UUID.randomUUID(); }
+        boolean activeIn(YearMonth month) {
+            return (fromMonth == null || !month.isBefore(fromMonth))
+                    && (untilMonth == null || !month.isAfter(untilMonth));
+        }
     }
 
     public enum Direction { INCOME, EXPENSE }
@@ -75,6 +79,8 @@ public class BudgetController {
     public record DebtOverview(YearMonth month, BigDecimal balance, BigDecimal due, List<PrincipalPaid> principalPaid) {}
     public record CalendarMark(@NotNull Boolean completed) {}
     public record CalendarDate(@NotNull LocalDate date) {}
+    public record CalendarAmount(@NotNull @DecimalMin("0") @DecimalMax("1000000000")
+                                 @Digits(integer = 10, fraction = 2) BigDecimal amount) {}
 
     private final BudgetService service;
 
@@ -109,6 +115,14 @@ public class BudgetController {
     @GetMapping("/until-payday")
     public CashCalendar.PaydayPlan untilPayday(@RequestParam BigDecimal balance) {
         return service.untilPayday(balance);
+    }
+
+    @PutMapping("/calendar/{month}/entries/{id}/amount")
+    public ResponseEntity<Void> recordCalendarAmount(
+            @PathVariable @DateTimeFormat(pattern = "uuuu-MM") YearMonth month,
+            @PathVariable UUID id, @Valid @RequestBody CalendarAmount request) {
+        service.recordCalendarAmount(month, id, request.amount());
+        return ResponseEntity.noContent().build();
     }
 
     @PutMapping("/calendar/{month}/entries/{id}/date")

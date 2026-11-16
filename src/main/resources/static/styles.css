@@ -23,3 +23,4 @@ select{font:inherit;width:100%;background:#fff;border:1px solid #dce2d5;border-r
 .debt-overview-totals div{background:#f1f6e7;border-radius:10px;padding:12px}
 .debt-overview-totals dt{color:var(--muted);font-size:12px}
 .debt-overview-totals dd{font-weight:650;margin:6px 0 0;overflow-wrap:anywhere}
+.header-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}

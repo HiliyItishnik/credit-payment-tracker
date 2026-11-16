@@ -29,17 +29,24 @@ public class LoanService {
 
     @Transactional
     public LoanDetail create(CreateLoan request) {
+        validateCreate(request);
+        Loan loan = new Loan(request.name(), request.principal().setScale(2),
+                request.debtType() == DebtType.MICROLOAN ? ZERO : request.annualRate(),
+                request.monthlyPayment().setScale(2), request.firstPaymentDate(), request.debtType(),
+                request.creditLimit(), request.dailyRate(), request.interestStartDate());
+        return detail(loans.save(loan), List.of());
+    }
+
+    public void validateCreate(CreateLoan request) {
         if (request.firstPaymentDate().isBefore(LocalDate.of(1900, 1, 1))
                 || request.firstPaymentDate().isAfter(LocalDate.of(2200, 12, 31))) {
             throw new CalculationException("Дата первого платежа должна быть между 1900 и 2200 годом.");
         }
         validateType(request);
-        Loan loan = new Loan(request.name(), request.principal().setScale(2),
-                request.debtType() == DebtType.MICROLOAN ? ZERO : request.annualRate(),
-                request.monthlyPayment().setScale(2), request.firstPaymentDate(), request.debtType(),
-                request.creditLimit(), request.dailyRate(), request.interestStartDate());
-        calculator.plan(loan.terms(), loan.getPrincipal(), 0, ZERO, ZERO);
-        return detail(loans.save(loan), List.of());
+        var terms = new AmortizationCalculator.Terms(request.principal(),
+                request.debtType() == DebtType.MICROLOAN ? ZERO : request.annualRate(), request.monthlyPayment(),
+                request.firstPaymentDate(), request.dailyRate(), request.interestStartDate());
+        calculator.plan(terms, request.principal(), 0, ZERO, ZERO);
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)

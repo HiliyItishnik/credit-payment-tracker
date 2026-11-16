@@ -6,6 +6,7 @@
 .budget-entry{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(75px,1fr) 64px auto;align-items:end;gap:8px}
 .budget-entry label{margin:0}
 .budget-entry input{margin-top:6px}
+.budget-period{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .budget-remove{padding:8px 10px;font-size:18px}
 .budget-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:20px 0}
 .budget-totals{grid-template-columns:repeat(3,minmax(0,1fr));margin:18px 0}
@@ -33,6 +34,7 @@
 .calendar-date-form label{margin:0}
 .calendar-date-form input{margin-top:6px}
 .budget-recovery{margin-bottom:20px}
+#backup-acknowledge{display:inline-block;width:auto;margin:16px 8px 16px 0}
 #budget-comparison td{white-space:pre-line;vertical-align:top}
 @media(max-width:740px){
   .budget-columns,.budget-totals{grid-template-columns:1fr}

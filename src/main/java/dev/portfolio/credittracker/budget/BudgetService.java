@@ -54,16 +54,31 @@ public class BudgetService {
 
     @Transactional
     public Overview save(Budget budget) {
+        validateBudget(budget);
+        return saveValidated(budget);
+    }
+
+    public void validateBudget(Budget budget) {
         if (budget.openingReserve().compareTo(budget.reserve()) > 0) {
             throw new CalculationException("Резерв на начало месяца не может превышать целевую сумму.");
         }
         for (var entry : budget.oneOffs()) validateMonth(YearMonth.from(entry.date()));
+        for (var entry : java.util.stream.Stream.concat(budget.incomes().stream(), budget.expenses().stream()).toList()) {
+            if (entry.fromMonth() != null) validateMonth(entry.fromMonth());
+            if (entry.untilMonth() != null) validateMonth(entry.untilMonth());
+            if (entry.fromMonth() != null && entry.untilMonth() != null && entry.fromMonth().isAfter(entry.untilMonth())) {
+                throw new CalculationException("Начало периода не может быть позже окончания.");
+            }
+        }
         var ids = new HashSet<UUID>();
         if (budget.incomes().stream().anyMatch(entry -> !ids.add(entry.id()))
                 || budget.expenses().stream().anyMatch(entry -> !ids.add(entry.id()))
                 || budget.oneOffs().stream().anyMatch(entry -> !ids.add(entry.id()))) {
             throw new CalculationException("В бюджете повторяется идентификатор строки.");
         }
+    }
+
+    private Overview saveValidated(Budget budget) {
         jdbc.sql("""
                 INSERT INTO monthly_budget(id, entries)
                 VALUES (1, '{"incomes":[],"expenses":[]}'::jsonb)
@@ -111,16 +126,38 @@ public class BudgetService {
         }
         boolean incomplete = plan.status() == RepaymentPlanner.Status.LIMIT
                 && !month.isBefore(YearMonth.from(today).plusMonths(MAX_MONTHS));
-        return CashCalendar.build(month, openingBalance, budget, events, incomplete, calendarMarks(), calendarDates());
+        return CashCalendar.build(month, openingBalance, budget, events, incomplete, calendarProgress(), calendarDates());
     }
 
     @Transactional
     public void markCalendarEntry(YearMonth month, UUID id, boolean completed) {
-        calendarEntry(month, id);
+        var event = calendarEntry(month, id);
+        saveCalendarAmount(month, id, completed ? event.amount() : ZERO);
         String sql = completed
                 ? "INSERT INTO budget_calendar_marks(entry_id, month) VALUES (:id, :month) ON CONFLICT DO NOTHING"
                 : "DELETE FROM budget_calendar_marks WHERE entry_id = :id AND month = :month";
         jdbc.sql(sql).param("id", id).param("month", month.atDay(1)).update();
+    }
+
+    @Transactional
+    public void recordCalendarAmount(YearMonth month, UUID id, BigDecimal amount) {
+        var event = calendarEntry(month, id);
+        if (amount.compareTo(event.amount()) > 0) throw new CalculationException("Укажи сумму не больше запланированной для операции.");
+        jdbc.sql("DELETE FROM budget_calendar_marks WHERE entry_id = :id AND month = :month")
+                .param("id", id).param("month", month.atDay(1)).update();
+        saveCalendarAmount(month, id, amount);
+    }
+
+    private void saveCalendarAmount(YearMonth month, UUID id, BigDecimal amount) {
+        if (amount.signum() == 0) {
+            jdbc.sql("DELETE FROM budget_calendar_amounts WHERE entry_id = :id AND month = :month")
+                    .param("id", id).param("month", month.atDay(1)).update();
+        } else {
+            jdbc.sql("""
+                    INSERT INTO budget_calendar_amounts(entry_id, month, amount) VALUES (:id, :month, :amount)
+                    ON CONFLICT (entry_id, month) DO UPDATE SET amount = EXCLUDED.amount
+                    """).param("id", id).param("month", month.atDay(1)).param("amount", amount).update();
+        }
     }
 
     @Transactional
@@ -170,12 +207,20 @@ public class BudgetService {
                         YearMonth.from(rs.getObject(2, LocalDate.class)))).list());
     }
 
+    private CashCalendar.Progress calendarProgress() {
+        var amounts = jdbc.sql("SELECT entry_id, month, amount FROM budget_calendar_amounts")
+                .query((rs, row) -> Map.entry(new CashCalendar.Occurrence(rs.getObject(1, UUID.class),
+                        YearMonth.from(rs.getObject(2, LocalDate.class))), rs.getBigDecimal(3)))
+                .list().stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        return new CashCalendar.Progress(calendarMarks(), amounts);
+    }
+
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public CashCalendar.PaydayPlan untilPayday(BigDecimal balance) {
         validateBalance(balance);
         LocalDate today = LocalDate.now();
         return CashCalendar.untilPayday(today, balance, loadBudget(), minimumSchedule(today).months(),
-                calendarMarks(), calendarDates());
+                calendarProgress(), calendarDates());
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -284,6 +329,14 @@ public class BudgetService {
 
     private RepaymentPlanner.Inputs inputs(Budget budget, BigDecimal firstMonthAvailable) {
         var adjustments = new HashMap<YearMonth, BigDecimal>();
+        YearMonth current = YearMonth.now();
+        BigDecimal income = total(budget.incomes(), current), expenses = total(budget.expenses(), current);
+        BigDecimal baseline = income.subtract(expenses);
+        for (int offset = 1; offset < MAX_MONTHS; offset++) {
+            YearMonth month = current.plusMonths(offset);
+            BigDecimal difference = total(budget.incomes(), month).subtract(total(budget.expenses(), month)).subtract(baseline);
+            if (difference.signum() != 0) adjustments.put(month, difference);
+        }
         for (var entry : budget.oneOffs()) {
             var amount = entry.direction() == Direction.INCOME ? entry.amount() : entry.amount().negate();
             adjustments.merge(YearMonth.from(entry.date()), amount, BigDecimal::add);
@@ -294,7 +347,7 @@ public class BudgetService {
                     adjustments.merge(occurrence.month(), amount.negate(), BigDecimal::add);
                     adjustments.merge(YearMonth.from(date), amount, BigDecimal::add);
                 }));
-        return new RepaymentPlanner.Inputs(total(budget.incomes()), total(budget.expenses()), firstMonthAvailable,
+        return new RepaymentPlanner.Inputs(income, expenses, firstMonthAvailable,
                 budget.reserve(), budget.openingReserve(), adjustments);
     }
 
@@ -358,8 +411,8 @@ public class BudgetService {
     }
 
     private Totals plannedTotals(Budget budget, YearMonth month) {
-        BigDecimal income = total(budget.incomes().stream().filter(entry -> entry.day() == null).toList());
-        BigDecimal expenses = total(budget.expenses().stream().filter(entry -> entry.day() == null).toList());
+        BigDecimal income = total(budget.incomes().stream().filter(entry -> entry.day() == null).toList(), month);
+        BigDecimal expenses = total(budget.expenses().stream().filter(entry -> entry.day() == null).toList(), month);
         for (var event : CashCalendar.scheduledBudgetEvents(month, budget, calendarDates())) {
             if (event.kind() == CashCalendar.Kind.INCOME) income = income.add(event.amount());
             else expenses = expenses.add(event.amount());
@@ -367,7 +420,7 @@ public class BudgetService {
         return new Totals(income, expenses, null);
     }
 
-    private BigDecimal total(List<Entry> entries) {
-        return entries.stream().map(Entry::amount).reduce(ZERO, BigDecimal::add);
+    private BigDecimal total(List<Entry> entries, YearMonth month) {
+        return entries.stream().filter(entry -> entry.activeIn(month)).map(Entry::amount).reduce(ZERO, BigDecimal::add);
     }
 }

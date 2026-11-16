@@ -100,6 +100,21 @@ function addEntry(group, entry = {}, focus = false) {
     $(oneOff ? 'add-one-off' : group === 'incomes' ? 'add-income' : 'add-expense').focus();
   });
   row.append(remove);
+  if (!oneOff) {
+    const period = element('div', '', 'budget-period');
+    for (const [field, title] of [['fromMonth', 'С месяца'], ['untilMonth', 'По месяц включительно']]) {
+      const label = element('label', title);
+      const input = element('input');
+      input.type = 'month';
+      input.name = field;
+      input.min = '1900-01';
+      input.max = '2200-12';
+      input.value = entry[field] ?? '';
+      label.append(input);
+      period.append(label);
+    }
+    row.append(period);
+  }
   $(group).append(row);
   if (focus) name.focus();
 }
@@ -137,7 +152,10 @@ function readEntries(group) {
       return {id, name, amount, date: row.querySelector('[name=date]').value, direction: row.querySelector('[name=direction]').value};
     }
     const day = row.querySelector('[name=day]').value;
-    return {id, name, amount, day: day ? Number(day) : null};
+    const fromMonth = row.querySelector('[name=fromMonth]').value || null;
+    const untilMonth = row.querySelector('[name=untilMonth]').value || null;
+    if (fromMonth && untilMonth && fromMonth > untilMonth) throw new Error('Начало периода должно быть не позже окончания.');
+    return {id, name, amount, day: day ? Number(day) : null, fromMonth, untilMonth};
   });
 }
 
@@ -420,16 +438,17 @@ function renderCalendarRows() {
     $('calendar-results').hidden = false;
     return;
   }
-  tableInto('calendar-results', ['Дата', 'Операция', 'Сумма', 'Остаток', 'Статус'], visible.map(({event, balance, completed}) => [
-    calendarDateControl(month, opening, event), kinds[event.kind] + ' · ' + event.name,
-    money(event.kind === 'INCOME' ? event.amount : -event.amount), money(balance),
-    calendarMarkButton(month, opening, event, completed)
+  tableInto('calendar-results', ['Дата', 'Операция', 'План', 'Остаток по плану', 'Факт и статус'], visible.map(row => [
+    calendarDateControl(month, opening, row.event), kinds[row.event.kind] + ' · ' + row.event.name,
+    money(row.event.kind === 'INCOME' ? row.event.amount : -row.event.amount), money(row.balance),
+    calendarMarkButton(month, opening, row)
   ]));
 }
 
 $('calendar-filter').addEventListener('change', renderCalendarRows);
 
-function calendarMarkButton(month, opening, event, completed) {
+function calendarMarkButton(month, opening, row) {
+  const {event, completed, actualAmount, remainingAmount} = row;
   if (!event.entryId) return event.kind === 'RECORDED_PAYMENT' ? 'Оплачено' : 'По графику';
   const label = event.kind === 'INCOME' ? 'Получено' : 'Оплачено';
   const action = event.kind === 'INCOME' ? 'Отметить получение' : 'Отметить оплату';
@@ -439,7 +458,36 @@ function calendarMarkButton(month, opening, event, completed) {
   button.setAttribute('aria-label', label + ' · ' + event.name + ' · ' + dayName(event.date));
   button.setAttribute('aria-pressed', String(completed));
   button.addEventListener('click', () => updateCalendarEntry(month, opening, event, jsonPut({completed: !completed})));
-  return button;
+  const container = element('div', '', 'calendar-date');
+  container.append(button, element('span', label + ' ' + money(actualAmount) + ' · осталось ' + money(remainingAmount), 'subtle'));
+  const details = element('details');
+  details.append(element('summary', 'Указать фактическую сумму'));
+  const form = element('form', '', 'calendar-date-form');
+  const amountLabel = element('label', 'Всего по операции, ₽');
+  const input = element('input');
+  input.id = 'actual-' + event.entryId + '-' + event.occurrenceMonth;
+  input.inputMode = 'decimal';
+  input.required = true;
+  input.value = actualAmount;
+  input.setAttribute('aria-label', 'Фактическая сумма · ' + event.name + ' · ' + event.occurrenceMonth);
+  amountLabel.append(input);
+  const save = element('button', 'Сохранить сумму', 'button secondary');
+  save.type = 'submit';
+  form.append(amountLabel, save);
+  form.addEventListener('submit', submit => {
+    submit.preventDefault();
+    try {
+      const amount = amountInput(input.id);
+      if (Number(amount) > event.amount) throw new Error('Фактическая сумма должна быть не больше плана. Для отмены введи 0.');
+      updateCalendarEntry(month, opening, event, jsonPut({amount}), '/amount', 'Фактическая сумма сохранена.');
+    } catch (error) {
+      $('calendar-message').classList.add('error');
+      $('calendar-message').textContent = error.message;
+    }
+  });
+  details.append(form);
+  container.append(details);
+  return container;
 }
 
 function calendarDateControl(month, opening, event) {
@@ -576,7 +624,9 @@ function compareDraft(saved) {
   recoveryVersion = saved.version;
   const describe = entries => entries.map(entry => entry.name + ' · ' + money(entry.amount)
     + (entry.date ? ' · ' + dateWithYear(entry.date) : entry.day ? ' · день ' + entry.day : '')
-    + (entry.direction === 'EXPENSE' ? ' · расход' : '')).join('\n') || 'Нет строк';
+    + (entry.direction === 'EXPENSE' ? ' · расход' : '')
+    + (entry.fromMonth ? ' · с ' + monthName(entry.fromMonth) : '')
+    + (entry.untilMonth ? ' · по ' + monthName(entry.untilMonth) : '')).join('\n') || 'Нет строк';
   const rows = [['Доходы', describe(recoveryDraft.incomes), describe(saved.incomes)],
     ['Расходы', describe(recoveryDraft.expenses), describe(saved.expenses)],
     ['Разовые операции', describe(recoveryDraft.oneOffs), describe(saved.oneOffs)],

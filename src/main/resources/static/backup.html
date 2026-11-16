@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Резервная копия — Платёж</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/budget.css">
+  <script src="/request.js" defer></script>
+  <script src="/backup.js" defer></script>
+</head>
+<body>
+  <main class="budget-page">
+    <header class="topbar"><a href="/">← К долгам</a><a href="/budget.html">Бюджет и план</a></header>
+    <div class="page-heading"><div><p class="eyebrow">МОИ ДАННЫЕ</p><h1>Резервная копия</h1></div></div>
+    <section class="card budget-card">
+      <h2>Сохранить все данные</h2>
+      <p class="subtle">Один файл содержит долги, историю платежей, бюджет с периодами действия, план и факт, переносы дат, отметки и частичные суммы. Его можно восстановить в другой установке приложения той же версии.</p>
+      <a class="button primary" href="/api/backup">Скачать полную копию</a>
+    </section>
+    <section class="card budget-card budget-tool" aria-labelledby="restore-title">
+      <h2 id="restore-title">Восстановить из файла</h2>
+      <p class="subtle">Восстановление заменит текущие данные содержимым файла. Сначала скачай текущую копию, затем выбери файл и проверь количество записей.</p>
+      <form id="backup-preview" class="budget-inline">
+        <label>Файл резервной копии<input id="backup-file" type="file" accept=".json,application/json" required></label>
+        <button class="button secondary" type="submit">Проверить файл</button>
+      </form>
+      <p id="backup-message" class="notice" role="status"></p>
+      <div id="backup-summary" class="table-wrap" role="region" aria-label="Состав резервной копии" tabindex="0" hidden></div>
+      <form id="backup-restore" hidden>
+        <label><input id="backup-acknowledge" type="checkbox" required> Я скачал текущую копию и согласен заменить данные содержимым выбранного файла.</label>
+        <div class="budget-actions"><button id="backup-restore-button" class="button danger" type="submit" disabled>Заменить данные и восстановить копию</button></div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

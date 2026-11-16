@@ -1,6 +1,7 @@
 package dev.portfolio.credittracker.api;
 
 import com.jayway.jsonpath.JsonPath;
+import dev.portfolio.credittracker.backup.BackupService;
 import jakarta.persistence.EntityManagerFactory;
 import org.hibernate.SessionFactory;
 import dev.portfolio.credittracker.api.LoanDtos.RecordPayment;
@@ -36,6 +37,8 @@ class LoanApiIT {
     @Autowired JdbcTemplate jdbc;
     @Autowired LoanService service;
     @Autowired EntityManagerFactory entityManagerFactory;
+    @Autowired BackupService backups;
+    @Autowired tools.jackson.databind.ObjectMapper json;
     private static final String LOAN = """
             {"name":"Кредит на ремонт","principal":100000.00,"annualRate":12,
              "monthlyPayment":10000.00,"firstPaymentDate":"2026-01-31"}
@@ -102,7 +105,7 @@ class LoanApiIT {
     @BeforeEach void cleanDedicatedTestDatabase() {
         String database = jdbc.queryForObject("select current_database()", String.class);
         assertTrue(database != null && database.endsWith("_test"), "Tests must use a separate database ending in _test");
-        jdbc.execute("TRUNCATE TABLE payments, loans, monthly_budget, budget_actuals, budget_calendar_marks, budget_calendar_dates");
+        jdbc.execute("TRUNCATE TABLE payments, loans, monthly_budget, budget_actuals, budget_calendar_marks, budget_calendar_dates, budget_calendar_amounts");
     }
     private String createLoan() throws Exception {
         String json = mvc.perform(post("/api/loans").contentType(APPLICATION_JSON).content(LOAN))
@@ -186,6 +189,31 @@ class LoanApiIT {
                 .andExpect(jsonPath("$.alternative.months[0].payments[0].balance").value(0))
                 .andExpect(jsonPath("$.plan.interest").value(281.84))
                 .andExpect(jsonPath("$.alternative.interest").value(312.74));
+    }
+
+    @Test void recurringPeriodsChangeFutureIncomeExpensesAndPayoffWithoutDuplicatingSalary() throws Exception {
+        YearMonth month = YearMonth.now();
+        createDebt("""
+                {"name":"Долг","principal":2500,"annualRate":0,"monthlyPayment":1000,"firstPaymentDate":"%s"}
+                """.formatted(month.atDay(1)));
+        String body = """
+                {"incomes":[{"name":"Старая зарплата","amount":1000,"day":1,"untilMonth":"%s"},
+                  {"name":"Новая зарплата","amount":2000,"day":1,"fromMonth":"%s","untilMonth":"%s"}],
+                 "expenses":[{"name":"Аренда","amount":500,"day":2,"fromMonth":"%s","untilMonth":"%s"}]}
+                """.formatted(month, month.plusMonths(1), month.plusMonths(1), month.plusMonths(1), month.plusMonths(1));
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content(body)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.plan.income").value(1000))
+                .andExpect(jsonPath("$.plan.months[0].total").value(1000))
+                .andExpect(jsonPath("$.plan.months[1].total").value(1500))
+                .andExpect(jsonPath("$.plan.payoffMonth").value(month.plusMonths(1).toString()));
+        mvc.perform(get("/api/budget/calendar/" + month.plusMonths(1)))
+                .andExpect(jsonPath("$.rows[?(@.event.kind == 'INCOME')].event.amount", contains(2000)))
+                .andExpect(jsonPath("$.rows[?(@.event.kind == 'EXPENSE')].event.amount", contains(500)));
+        mvc.perform(get("/api/budget/calendar/" + month.plusMonths(2)))
+                .andExpect(jsonPath("$.rows[?(@.event.entryId != null)]", org.hamcrest.Matchers.hasSize(0)));
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON)
+                .content(body.replace("\"untilMonth\":\"" + month + "\"", "\"untilMonth\":\"" + month + "\",\"fromMonth\":\"" + month.plusMonths(1) + "\"")))
+                .andExpect(status().isUnprocessableContent());
     }
 
     @Test void calendarFindsCashGapBeforePaydayDespiteMonthlySurplus() throws Exception {
@@ -658,6 +686,144 @@ class LoanApiIT {
         } finally {
             statistics.setStatisticsEnabled(false);
         }
+    }
+
+    @Test void partialAmountsReduceOnlyTheUnpaidPartAndSurviveMoves() throws Exception {
+        LocalDate today = LocalDate.now();
+        UUID rent = UUID.randomUUID(), salary = UUID.randomUUID();
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("""
+                {"incomes":[],"expenses":[],"oneOffs":[
+                  {"id":"%s","name":"Расход","amount":1000,"date":"%s","direction":"EXPENSE"},
+                  {"id":"%s","name":"Доход","amount":5000,"date":"%s","direction":"INCOME"}]}
+                """.formatted(rent, today, salary, today.plusDays(3)))).andExpect(status().isOk());
+        String path = "/api/budget/calendar/" + YearMonth.from(today) + "/entries/" + rent;
+        mvc.perform(put(path + "/amount").contentType(APPLICATION_JSON).content("{\"amount\":400}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget/until-payday").param("balance", "2000"))
+                .andExpect(jsonPath("$.required").value(600));
+        mvc.perform(get("/api/budget/calendar/" + YearMonth.from(today)))
+                .andExpect(jsonPath("$.rows[0].actualAmount").value(400))
+                .andExpect(jsonPath("$.rows[0].remainingAmount").value(600))
+                .andExpect(jsonPath("$.rows[0].completed").value(false));
+        mvc.perform(put(path).contentType(APPLICATION_JSON).content("{\"completed\":true}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget/until-payday").param("balance", "2000"))
+                .andExpect(jsonPath("$.required").value(0));
+        mvc.perform(put(path + "/amount").contentType(APPLICATION_JSON).content("{\"amount\":250}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(put(path + "/amount").contentType(APPLICATION_JSON).content("{\"amount\":1001}"))
+                .andExpect(status().isUnprocessableContent());
+        mvc.perform(put(path + "/date").contentType(APPLICATION_JSON)
+                .content("{\"date\":\"" + YearMonth.now().plusMonths(1).atDay(1) + "\"}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget/calendar/" + YearMonth.now().plusMonths(1)))
+                .andExpect(jsonPath("$.rows[?(@.event.entryId == '%s')].actualAmount".formatted(rent), contains(250.0)));
+        String incomePath = "/api/budget/calendar/" + YearMonth.from(today.plusDays(3)) + "/entries/" + salary + "/amount";
+        mvc.perform(put(incomePath).contentType(APPLICATION_JSON).content("{\"amount\":3000}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget/until-payday").param("balance", "2000"))
+                .andExpect(jsonPath("$.nextIncomeDate").value(today.plusDays(3).toString()));
+        mvc.perform(put(incomePath).contentType(APPLICATION_JSON).content("{\"amount\":5000}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget/until-payday").param("balance", "2000"))
+                .andExpect(jsonPath("$.nextIncomeDate").doesNotExist());
+    }
+
+    @Test void backupRestoresEveryDataSetAndInvalidatesStaleBudgetVersions() throws Exception {
+        String loan = createLoan();
+        savedPayment(loan, "10000");
+        UUID rent = UUID.randomUUID(), salary = UUID.randomUUID();
+        YearMonth month = YearMonth.now();
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("""
+                {"incomes":[{"id":"%s","name":"Зарплата","amount":20000,"day":1,"fromMonth":"%s"}],
+                 "expenses":[{"id":"%s","name":"Аренда","amount":1000,"day":2}]}
+                """.formatted(salary, month, rent))).andExpect(status().isOk());
+        String path = "/api/budget/calendar/" + month + "/entries/";
+        mvc.perform(put(path + salary).contentType(APPLICATION_JSON).content("{\"completed\":true}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(put(path + rent + "/amount").contentType(APPLICATION_JSON).content("{\"amount\":400}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(put(path + rent + "/date").contentType(APPLICATION_JSON)
+                .content("{\"date\":\"" + month.plusMonths(1).atDay(3) + "\"}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(put("/api/budget/months/" + month).contentType(APPLICATION_JSON)
+                .content("{\"income\":20000,\"expenses\":1000}")).andExpect(status().isOk());
+        String source = mvc.perform(get("/api/backup")).andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andReturn().getResponse().getContentAsString();
+        mvc.perform(delete("/api/loans/" + loan)).andExpect(status().isNoContent());
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("{\"incomes\":[],\"expenses\":[]}"))
+                .andExpect(status().isOk());
+        String checksum = JsonPath.read(mvc.perform(post("/api/backup/preview").contentType(APPLICATION_JSON).content(source))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.imported.payments").value(1))
+                .andReturn().getResponse().getContentAsString(), "$.currentChecksum");
+        var backup = json.readValue(source, BackupService.Backup.class);
+        mvc.perform(post("/api/backup/restore").contentType(APPLICATION_JSON)
+                .content(json.writeValueAsString(new BackupService.Restore(backup, checksum))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.loans").value(1));
+        mvc.perform(get("/api/loans/" + loan)).andExpect(jsonPath("$.balance").value(91000));
+        mvc.perform(get("/api/budget/calendar/" + month.plusMonths(1)))
+                .andExpect(jsonPath("$.rows[?(@.event.occurrenceMonth == '%s')].actualAmount".formatted(month), contains(400.0)));
+        mvc.perform(get("/api/budget/months/" + month)).andExpect(jsonPath("$.actual.income").value(20000));
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("{\"version\":2,\"incomes\":[],\"expenses\":[]}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test void backupRejectsCorruptionInvalidHistoryAndChangesAfterPreview() throws Exception {
+        String loan = createLoan();
+        savedPayment(loan, "10000");
+        var valid = backups.export();
+        var invalid = new BackupService.Backup(1, valid.createdAt(), valid.data(), "0".repeat(64));
+        mvc.perform(post("/api/backup/preview").contentType(APPLICATION_JSON).content(json.writeValueAsString(invalid)))
+                .andExpect(status().isUnprocessableContent());
+        jdbc.update("UPDATE payments SET balance = balance + 1");
+        var badHistory = backups.export();
+        jdbc.update("UPDATE payments SET balance = balance - 1");
+        mvc.perform(post("/api/backup/preview").contentType(APPLICATION_JSON).content(json.writeValueAsString(badHistory)))
+                .andExpect(status().isUnprocessableContent());
+        String checksum = JsonPath.read(mvc.perform(post("/api/backup/preview").contentType(APPLICATION_JSON)
+                .content(json.writeValueAsString(valid))).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(), "$.currentChecksum");
+        createLoan();
+        mvc.perform(post("/api/backup/restore").contentType(APPLICATION_JSON)
+                .content(json.writeValueAsString(new BackupService.Restore(valid, checksum))))
+                .andExpect(status().isConflict());
+        assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM loans", Integer.class));
+        mvc.perform(get("/api/loans/" + loan)).andExpect(jsonPath("$.balance").value(91000));
+    }
+
+    @Test void failedRestoreRollsBackAllDeletesAndBusyDataRejectsRestore() throws Exception {
+        String loan = createLoan();
+        var source = backups.export();
+        String checksum = backups.preview(source).currentChecksum();
+        String body = json.writeValueAsString(new BackupService.Restore(source, checksum));
+        try (var connection = jdbc.getDataSource().getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                connection.createStatement().execute("LOCK TABLE loans IN ROW EXCLUSIVE MODE");
+                mvc.perform(post("/api/backup/restore").contentType(APPLICATION_JSON).content(body))
+                        .andExpect(status().isConflict());
+            } finally { connection.rollback(); }
+        }
+        jdbc.execute("ALTER TABLE loans ADD CONSTRAINT restore_failure_test CHECK (principal < 50000) NOT VALID");
+        try {
+            mvc.perform(post("/api/backup/restore").contentType(APPLICATION_JSON).content(body))
+                    .andExpect(status().isConflict());
+            mvc.perform(get("/api/loans/" + loan)).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.balance").value(100000));
+        } finally { jdbc.execute("ALTER TABLE loans DROP CONSTRAINT restore_failure_test"); }
+    }
+
+    @Test void restoringAnEmptyCopyStillInvalidatesOpenBudgetForms() throws Exception {
+        var empty = backups.export();
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("{\"incomes\":[],\"expenses\":[]}"))
+                .andExpect(status().isOk());
+        String checksum = backups.preview(empty).currentChecksum();
+        mvc.perform(post("/api/backup/restore").contentType(APPLICATION_JSON)
+                .content(json.writeValueAsString(new BackupService.Restore(empty, checksum))))
+                .andExpect(status().isOk());
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("{\"version\":1,\"incomes\":[],\"expenses\":[]}"))
+                .andExpect(status().isConflict());
     }
 
     @Test void keepsHistoriesOfDifferentLoansSeparate() throws Exception {

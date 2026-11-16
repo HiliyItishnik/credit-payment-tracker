@@ -43,6 +43,7 @@ jobs:
           node --check src/main/resources/static/app.js
           node --check src/main/resources/static/budget.js
           node --check src/main/resources/static/request.js
+          node --check src/main/resources/static/backup.js
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 20
