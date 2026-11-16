@@ -32,6 +32,8 @@
 .calendar-date-form{display:grid;gap:8px;margin-top:10px;white-space:normal}
 .calendar-date-form label{margin:0}
 .calendar-date-form input{margin-top:6px}
+.budget-recovery{margin-bottom:20px}
+#budget-comparison td{white-space:pre-line;vertical-align:top}
 @media(max-width:740px){
   .budget-columns,.budget-totals{grid-template-columns:1fr}
   .budget-page{padding-inline:16px}

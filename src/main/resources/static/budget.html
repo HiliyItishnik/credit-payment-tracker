@@ -21,6 +21,15 @@
     </div>
     <p id="budget-loading" class="loading" role="status">Загружаем бюджет…</p>
     <p id="budget-error" class="notice error" role="alert" hidden></p>
+    <section id="budget-recovery" class="card budget-card budget-recovery" aria-labelledby="budget-recovery-title" hidden>
+      <h2 id="budget-recovery-title">Черновик моих изменений</h2>
+      <p id="budget-recovery-message" role="status"></p>
+      <div class="budget-actions">
+        <button id="budget-reload" class="button secondary" type="button">Загрузить актуальный бюджет</button>
+        <button id="budget-restore-draft" class="button secondary" type="button" disabled>Вернуть мой черновик в форму</button>
+      </div>
+      <div id="budget-comparison" class="table-wrap" role="region" aria-label="Сравнение черновика и сохранённого бюджета" tabindex="0" hidden></div>
+    </section>
     <form id="budget-form" hidden>
       <div class="budget-columns">
         <fieldset class="card budget-card">
@@ -52,6 +61,7 @@
       </fieldset>
       <div class="budget-actions">
         <button id="budget-save" class="button primary" type="submit">Сохранить и рассчитать план</button>
+        <button id="budget-undo-remove" class="button secondary" type="button" hidden>Отменить удаление строки</button>
         <p id="budget-status" class="subtle" role="status"></p>
       </div>
     </form>
@@ -101,6 +111,16 @@
           <button class="button primary" type="submit">Показать календарь</button>
         </form>
         <p id="calendar-message" class="notice" role="status"></p>
+        <div id="calendar-filters" hidden>
+          <label class="budget-strategy">Показать операции
+            <select id="calendar-filter">
+              <option value="all">Все операции</option>
+              <option value="pending">Неотмеченные</option>
+              <option value="upcoming">Предстоящие неотмеченные</option>
+            </select>
+          </label>
+          <p id="calendar-count" class="subtle" role="status"></p>
+        </div>
         <div id="calendar-results" class="table-wrap" tabindex="0" role="region" aria-label="Движение денег по датам" hidden></div>
       </section>
       <section class="card budget-card budget-tool" aria-labelledby="reminders-title">

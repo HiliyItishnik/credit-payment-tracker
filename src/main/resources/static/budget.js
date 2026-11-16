@@ -12,6 +12,11 @@ let overview;
 let budgetVersion;
 let openedMonth;
 let paydayRevision = 0;
+let calendarView = null;
+const removedRows = [];
+const draftKey = 'credit-tracker-budget-draft';
+let recoveryDraft = null;
+let recoveryVersion = null;
 const now = new Date();
 const currentMonth = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
 const dayFormat = new Intl.DateTimeFormat('ru-RU', {day: 'numeric', month: 'long'});
@@ -87,7 +92,10 @@ function addEntry(group, entry = {}, focus = false) {
   remove.type = 'button';
   remove.setAttribute('aria-label', oneOff ? 'Убрать операцию' : group === 'incomes' ? 'Убрать доход' : 'Убрать расход');
   remove.addEventListener('click', () => {
+    const index = [...$(group).children].indexOf(row);
+    removedRows.push({group, row, index});
     row.remove();
+    $('budget-undo-remove').hidden = false;
     markEdited();
     $(oneOff ? 'add-one-off' : group === 'incomes' ? 'add-income' : 'add-expense').focus();
   });
@@ -95,6 +103,27 @@ function addEntry(group, entry = {}, focus = false) {
   $(group).append(row);
   if (focus) name.focus();
 }
+
+function clearRemovedRows() {
+  removedRows.length = 0;
+  $('budget-undo-remove').hidden = true;
+}
+
+$('budget-undo-remove').addEventListener('click', () => {
+  const removed = removedRows.at(-1);
+  if (!removed) return;
+  const container = $(removed.group);
+  const limit = removed.group === 'oneOffs' ? 100 : 50;
+  if (container.children.length >= limit) {
+    showError(new Error('Для восстановления освободи одну строку в этом разделе.'));
+    return;
+  }
+  removedRows.pop();
+  container.insertBefore(removed.row, container.children[removed.index] ?? null);
+  $('budget-undo-remove').hidden = removedRows.length === 0;
+  markEdited();
+  removed.row.querySelector('[name=name]').focus();
+});
 
 function readEntries(group) {
   return [...$(group).children].map(row => {
@@ -213,6 +242,8 @@ function renderOverview(result) {
   renderPlan(result[$('budget-strategy').value]);
   $('budget-tools').hidden = false;
   $('calendar-results').hidden = true;
+  calendarView = null;
+  $('calendar-filters').hidden = true;
   $('calendar-message').textContent = '';
   resetPayday();
   resetReview();
@@ -337,6 +368,8 @@ async function loadCalendar(month, opening) {
   const form = $('calendar-form');
   const message = $('calendar-message');
   $('calendar-results').hidden = true;
+  calendarView = null;
+  $('calendar-filters').hidden = true;
   message.classList.remove('error');
   message.textContent = 'Рассчитываем календарь…';
   setToolBusy(form, true);
@@ -352,14 +385,9 @@ async function loadCalendar(month, opening) {
     if (incompleteDebtSchedule) warnings.push('Месяц за пределами расчёта обязательных платежей.');
     message.classList.toggle('error', Boolean(firstGap || reserveGap) || openingBalance < reserve);
     message.textContent = warnings.join(' ') || (rows.length ? 'По указанным датам денег хватает.' : 'На этот месяц событий нет.');
-    if (rows.length) {
-      const kinds = {INCOME: 'Доход', EXPENSE: 'Расход', PAYMENT: 'Платёж по графику', RECORDED_PAYMENT: 'Записанный платёж'};
-      tableInto('calendar-results', ['Дата', 'Операция', 'Сумма', 'Остаток', 'Статус'], rows.map(({event, balance, completed}) => [
-        calendarDateControl(month, opening, event), kinds[event.kind] + ' · ' + event.name,
-        money(event.kind === 'INCOME' ? event.amount : -event.amount), money(balance),
-        calendarMarkButton(month, opening, event, completed)
-      ]));
-    }
+    calendarView = {month, opening, rows};
+    $('calendar-filters').hidden = false;
+    renderCalendarRows();
     return true;
   } catch (error) {
     message.classList.add('error');
@@ -369,6 +397,37 @@ async function loadCalendar(month, opening) {
     setToolBusy(form, false);
   }
 }
+
+function visibleCalendarRows(rows, filter, today) {
+  return rows.filter(({event, completed}) => {
+    const pending = !completed && event.kind !== 'RECORDED_PAYMENT';
+    if (filter === 'pending') return pending;
+    if (filter === 'upcoming') return pending && event.date >= today;
+    return true;
+  });
+}
+
+function renderCalendarRows() {
+  if (!calendarView) return;
+  const {month, opening, rows} = calendarView;
+  const today = new Intl.DateTimeFormat('sv-SE').format(new Date());
+  const visible = visibleCalendarRows(rows, $('calendar-filter').value, today);
+  $('calendar-count').textContent = 'Показано ' + visible.length + ' из ' + rows.length
+    + '. Остатки рассчитаны по всем операциям месяца.';
+  const kinds = {INCOME: 'Доход', EXPENSE: 'Расход', PAYMENT: 'Платёж по графику', RECORDED_PAYMENT: 'Записанный платёж'};
+  if (!visible.length) {
+    $('calendar-results').replaceChildren(element('p', 'По выбранному фильтру операций нет.', 'subtle'));
+    $('calendar-results').hidden = false;
+    return;
+  }
+  tableInto('calendar-results', ['Дата', 'Операция', 'Сумма', 'Остаток', 'Статус'], visible.map(({event, balance, completed}) => [
+    calendarDateControl(month, opening, event), kinds[event.kind] + ' · ' + event.name,
+    money(event.kind === 'INCOME' ? event.amount : -event.amount), money(balance),
+    calendarMarkButton(month, opening, event, completed)
+  ]));
+}
+
+$('calendar-filter').addEventListener('change', renderCalendarRows);
 
 function calendarMarkButton(month, opening, event, completed) {
   if (!event.entryId) return event.kind === 'RECORDED_PAYMENT' ? 'Оплачено' : 'По графику';
@@ -457,6 +516,8 @@ $('calendar-form').addEventListener('submit', event => {
 });
 $('calendar-form').addEventListener('input', () => {
   $('calendar-results').hidden = true;
+  calendarView = null;
+  $('calendar-filters').hidden = true;
   $('calendar-message').textContent = '';
 });
 
@@ -497,7 +558,64 @@ $('actual-form').addEventListener('submit', async event => {
 function setBusy(busy) {
   for (const fieldset of $('budget-form').querySelectorAll('fieldset')) fieldset.disabled = busy;
   $('budget-save').disabled = busy;
+  $('budget-reload').disabled = busy;
+  $('budget-restore-draft').disabled = busy || recoveryVersion == null;
 }
+
+function rememberDraft(budget) {
+  recoveryDraft = budget;
+  recoveryVersion = null;
+  try { sessionStorage.setItem(draftKey, JSON.stringify(budget)); } catch {}
+  $('budget-recovery').hidden = false;
+  $('budget-restore-draft').disabled = true;
+  $('budget-comparison').hidden = true;
+  $('budget-recovery-message').textContent = 'Твои правки сохранены в черновик этой вкладки. Загрузи актуальный бюджет, затем сравни его с черновиком.';
+}
+
+function compareDraft(saved) {
+  recoveryVersion = saved.version;
+  const describe = entries => entries.map(entry => entry.name + ' · ' + money(entry.amount)
+    + (entry.date ? ' · ' + dateWithYear(entry.date) : entry.day ? ' · день ' + entry.day : '')
+    + (entry.direction === 'EXPENSE' ? ' · расход' : '')).join('\n') || 'Нет строк';
+  const rows = [['Доходы', describe(recoveryDraft.incomes), describe(saved.incomes)],
+    ['Расходы', describe(recoveryDraft.expenses), describe(saved.expenses)],
+    ['Разовые операции', describe(recoveryDraft.oneOffs), describe(saved.oneOffs)],
+    ['Целевой резерв', money(recoveryDraft.reserve), money(saved.reserve)],
+    ['Стартовый резерв', money(recoveryDraft.openingReserve), money(saved.openingReserve)]];
+  tableInto('budget-comparison', ['Раздел', 'Мой черновик', 'Актуальная версия'], rows);
+  $('budget-recovery').hidden = false;
+  $('budget-restore-draft').disabled = false;
+}
+
+function clearDraft() {
+  recoveryDraft = null;
+  recoveryVersion = null;
+  try { sessionStorage.removeItem(draftKey); } catch {}
+  $('budget-recovery').hidden = true;
+}
+
+$('budget-reload').addEventListener('click', async () => {
+  setBusy(true);
+  try {
+    const result = await budgetApi();
+    renderBudget(result);
+    compareDraft(result.budget);
+    $('budget-error').hidden = true;
+    $('budget-recovery-message').textContent = 'Актуальная версия загружена. Сравни её со своим черновиком. Кнопка ниже откроет строки черновика в форме для проверки и сохранения.';
+  } catch (error) {
+    showError(error);
+  } finally {
+    setBusy(false);
+  }
+});
+
+$('budget-restore-draft').addEventListener('click', () => {
+  if (!recoveryDraft || recoveryVersion == null) return;
+  renderBudget({...overview, budget: {...recoveryDraft, version: recoveryVersion}});
+  markEdited();
+  $('budget-recovery-message').textContent = 'Черновик открыт в форме. Сверь его с актуальной версией в таблице, внеси нужные правки и сохрани бюджет.';
+  $('budget-form').querySelector('input').focus();
+});
 
 function showError(error) {
   $('budget-error').textContent = error.message;
@@ -520,15 +638,20 @@ $('budget-form').addEventListener('submit', async event => {
   event.preventDefault();
   $('budget-error').hidden = true;
   setBusy(true);
+  let submitted;
   try {
     const budget = {
       version: budgetVersion,
       incomes: readEntries('incomes'), expenses: readEntries('expenses'), oneOffs: readEntries('oneOffs'),
       reserve: amountInput('budget-reserve'), openingReserve: amountInput('budget-opening-reserve')
     };
+    submitted = budget;
     renderOverview(await budgetApi(jsonPut(budget)));
+    clearRemovedRows();
+    clearDraft();
     $('budget-status').textContent = 'Бюджет сохранён.';
   } catch (error) {
+    if (error.status === 409 && submitted) rememberDraft(submitted);
     showError(error);
   } finally {
     setBusy(false);
@@ -536,6 +659,7 @@ $('budget-form').addEventListener('submit', async event => {
 });
 
 function renderBudget(result) {
+  clearRemovedRows();
   const {budget} = result;
   for (const group of groups) {
     $(group).replaceChildren();
@@ -549,7 +673,18 @@ function renderBudget(result) {
 
 async function loadBudget() {
   try {
-    renderBudget(await budgetApi());
+    const result = await budgetApi();
+    renderBudget(result);
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(draftKey));
+      if (stored && groups.every(group => Array.isArray(stored[group])
+          && stored[group].length <= (group === 'oneOffs' ? 100 : 50)
+          && stored[group].every(entry => entry && typeof entry.name === 'string'))) {
+        recoveryDraft = stored;
+        compareDraft(result.budget);
+        $('budget-recovery-message').textContent = 'В этой вкладке есть черновик после конфликта сохранения. Сравни его с актуальной версией и при необходимости верни в форму.';
+      }
+    } catch {}
   } catch (error) {
     showError(error);
   } finally {
