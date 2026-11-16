@@ -8,18 +8,12 @@ const debtNames = {LOAN: 'Кредит', CREDIT_CARD: 'Кредитная кар
 const fieldNames = {name: 'Название', principal: 'Сумма долга', annualRate: 'Годовая ставка', monthlyPayment: 'Плановый платёж', firstPaymentDate: 'Дата первого платежа', amount: 'Сумма платежа', requestId: 'Идентификатор запроса', debtType: 'Тип долга', creditLimit: 'Кредитный лимит', dailyRate: 'Дневная ставка', interestStartDate: 'Начало начисления процентов'};
 
 async function api(path, options = {}) {
-  let response;
-  try { response = await fetch('/api/loans' + path, {headers: {'Content-Type': 'application/json'}, ...options}); }
-  catch { throw new Error('Нет связи с сервером. Проверь, запущено ли приложение, и попробуй снова.'); }
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    let message = error.detail || 'Не удалось выполнить запрос. Попробуй обновить страницу.';
-    if (error.errors) message += ' Поля: ' + Object.keys(error.errors).map(key => fieldNames[key] || key).join(', ') + '.';
-    const failure = new Error(message);
-    failure.status = response.status;
-    throw failure;
+  try {
+    return await requestJson('/api/loans' + path, {headers: {'Content-Type': 'application/json'}, ...options});
+  } catch (error) {
+    if (error.errors) error.message += ' Поля: ' + Object.keys(error.errors).map(key => fieldNames[key] || key).join(', ') + '.';
+    throw error;
   }
-  return response.status === 204 ? null : response.json();
 }
 
 function showError(id, error) { $(id).textContent = error.message; $(id).hidden = false; }
@@ -70,9 +64,7 @@ async function refreshDebtOverview() {
   const section = $('debt-overview');
   section.hidden = true;
   try {
-    const response = await fetch('/api/budget/debt-overview');
-    if (!response.ok) return;
-    const overview = await response.json();
+    const overview = await requestJson('/api/budget/debt-overview');
     $('overview-balance').textContent = money(overview.balance);
     $('overview-due').textContent = money(overview.due);
     const format = new Intl.DateTimeFormat('ru-RU', {month: 'short', year: 'numeric'});

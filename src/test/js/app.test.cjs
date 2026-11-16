@@ -16,8 +16,9 @@ function browser(fetch) {
     querySelectorAll() { return []; }
   };
   let requests = 0;
-  const context = vm.createContext({document, fetch, Intl, URLSearchParams,
+  const context = vm.createContext({document, fetch, Intl, URLSearchParams, AbortController, setTimeout, clearTimeout,
     crypto: {randomUUID: () => 'request-' + ++requests}});
+  vm.runInContext(readFileSync(require('node:path').join(__dirname, '../../main/resources/static/request.js'), 'utf8'), context);
   const source = readFileSync(require('node:path').join(__dirname, '../../main/resources/static/app.js'), 'utf8');
   // Initialize handlers without the automatic initial HTTP request.
   vm.runInContext(source.replace(/start\(\);\s*$/, ''), context);

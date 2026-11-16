@@ -74,6 +74,7 @@ public class BudgetController {
     public record PrincipalPaid(YearMonth month, BigDecimal amount) {}
     public record DebtOverview(YearMonth month, BigDecimal balance, BigDecimal due, List<PrincipalPaid> principalPaid) {}
     public record CalendarMark(@NotNull Boolean completed) {}
+    public record CalendarDate(@NotNull LocalDate date) {}
 
     private final BudgetService service;
 
@@ -108,6 +109,21 @@ public class BudgetController {
     @GetMapping("/until-payday")
     public CashCalendar.PaydayPlan untilPayday(@RequestParam BigDecimal balance) {
         return service.untilPayday(balance);
+    }
+
+    @PutMapping("/calendar/{month}/entries/{id}/date")
+    public ResponseEntity<Void> rescheduleCalendarEntry(
+            @PathVariable @DateTimeFormat(pattern = "uuuu-MM") YearMonth month,
+            @PathVariable UUID id, @Valid @RequestBody CalendarDate request) {
+        service.rescheduleCalendarEntry(month, id, request.date());
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/calendar/{month}/entries/{id}/date")
+    public ResponseEntity<Void> resetCalendarEntryDate(
+            @PathVariable @DateTimeFormat(pattern = "uuuu-MM") YearMonth month, @PathVariable UUID id) {
+        service.rescheduleCalendarEntry(month, id, null);
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/debt-overview")

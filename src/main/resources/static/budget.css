@@ -26,6 +26,12 @@
 .budget-one-off{grid-template-columns:minmax(0,1.3fr) minmax(90px,1fr) minmax(135px,1fr) minmax(110px,1fr) auto}
 .budget-one-off select{margin-top:6px}
 #calendar-results button[aria-pressed="true"]{background:#e7f2dd;border-color:#87a86c;color:#284c24}
+.calendar-date{display:grid;gap:6px;min-width:160px}
+.calendar-date .subtle{font-size:12px}
+.calendar-date summary{cursor:pointer;color:var(--muted)}
+.calendar-date-form{display:grid;gap:8px;margin-top:10px;white-space:normal}
+.calendar-date-form label{margin:0}
+.calendar-date-form input{margin-top:6px}
 @media(max-width:740px){
   .budget-columns,.budget-totals{grid-template-columns:1fr}
   .budget-page{padding-inline:16px}

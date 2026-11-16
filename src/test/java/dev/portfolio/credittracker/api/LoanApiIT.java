@@ -102,7 +102,7 @@ class LoanApiIT {
     @BeforeEach void cleanDedicatedTestDatabase() {
         String database = jdbc.queryForObject("select current_database()", String.class);
         assertTrue(database != null && database.endsWith("_test"), "Tests must use a separate database ending in _test");
-        jdbc.execute("TRUNCATE TABLE payments, loans, monthly_budget, budget_actuals, budget_calendar_marks");
+        jdbc.execute("TRUNCATE TABLE payments, loans, monthly_budget, budget_actuals, budget_calendar_marks, budget_calendar_dates");
     }
     private String createLoan() throws Exception {
         String json = mvc.perform(post("/api/loans").contentType(APPLICATION_JSON).content(LOAN))
@@ -280,6 +280,93 @@ class LoanApiIT {
         }
         mvc.perform(get("/api/budget")).andExpect(jsonPath("$.budget.version").value(2))
                 .andExpect(jsonPath("$.budget.reserve").value(5000));
+    }
+
+    @Test void movedRecurringOperationsKeepTheirIdentityAndCanReturnToTheOriginalMonth() throws Exception {
+        YearMonth month = YearMonth.now();
+        UUID salary = UUID.randomUUID(), rent = UUID.randomUUID();
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("""
+                {"incomes":[{"id":"%s","name":"Зарплата","amount":5000,"day":1}],
+                 "expenses":[{"id":"%s","name":"Аренда","amount":1000,"day":2}]}
+                """.formatted(salary, rent))).andExpect(status().isOk());
+        String salaryPath = "/api/budget/calendar/" + month + "/entries/" + salary;
+        String rentPath = "/api/budget/calendar/" + month + "/entries/" + rent;
+        mvc.perform(put(salaryPath + "/date").contentType(APPLICATION_JSON)
+                .content("{\"date\":\"" + month.plusMonths(1).atDay(3) + "\"}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(put(rentPath + "/date").contentType(APPLICATION_JSON)
+                .content("{\"date\":\"" + month.plusMonths(1).atDay(4) + "\"}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget/calendar/" + month)).andExpect(jsonPath("$.rows.length()").value(0));
+        mvc.perform(get("/api/budget/calendar/" + month.plusMonths(1)))
+                .andExpect(jsonPath("$.rows.length()").value(4));
+        mvc.perform(put(rentPath).contentType(APPLICATION_JSON).content("{\"completed\":true}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget/calendar/" + month.plusMonths(1)))
+                .andExpect(jsonPath("$.rows[?(@.event.occurrenceMonth == '%s' && @.event.entryId == '%s')].completed"
+                        .formatted(month, rent), contains(true)))
+                .andExpect(jsonPath("$.rows[?(@.event.occurrenceMonth == '%s' && @.event.entryId == '%s')].completed"
+                        .formatted(month.plusMonths(1), rent), contains(false)));
+        mvc.perform(get("/api/budget/months/" + month))
+                .andExpect(jsonPath("$.planned.income").value(0)).andExpect(jsonPath("$.planned.expenses").value(0));
+        mvc.perform(get("/api/budget/until-payday").param("balance", "4000"))
+                .andExpect(jsonPath("$.nextIncomeDate").value(month.plusMonths(1).atDay(1).toString()));
+        mvc.perform(delete(rentPath + "/date")).andExpect(status().isNoContent());
+        mvc.perform(delete(rentPath + "/date")).andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget/calendar/" + month)).andExpect(jsonPath("$.rows[0].completed").value(true))
+                .andExpect(jsonPath("$.rows[0].event.date").value(month.atDay(2).toString()));
+    }
+
+    @Test void changedOneOffDatesRecalculatePaydayAndPreserveCompletionMarks() throws Exception {
+        LocalDate today = LocalDate.now();
+        UUID income = UUID.randomUUID(), expense = UUID.randomUUID();
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("""
+                {"incomes":[],"expenses":[],"oneOffs":[
+                  {"id":"%s","name":"Премия","amount":5000,"date":"%s","direction":"INCOME"},
+                  {"id":"%s","name":"Покупка","amount":1000,"date":"%s","direction":"EXPENSE"},
+                  {"name":"Доход","amount":5000,"date":"%s","direction":"INCOME"}]}
+                """.formatted(income, today.plusDays(1), expense, today.plusDays(2), today.plusDays(7))))
+                .andExpect(status().isOk());
+        String incomePath = "/api/budget/calendar/" + YearMonth.from(today.plusDays(1)) + "/entries/" + income;
+        String expensePath = "/api/budget/calendar/" + YearMonth.from(today.plusDays(2)) + "/entries/" + expense;
+        mvc.perform(put(incomePath + "/date").contentType(APPLICATION_JSON)
+                .content("{\"date\":\"" + today.plusDays(4) + "\"}")).andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget/until-payday").param("balance", "4000"))
+                .andExpect(jsonPath("$.nextIncomeDate").value(today.plusDays(4).toString()))
+                .andExpect(jsonPath("$.required").value(1000));
+        mvc.perform(put(expensePath + "/date").contentType(APPLICATION_JSON)
+                .content("{\"date\":\"" + today.plusDays(5) + "\"}")).andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget/until-payday").param("balance", "4000"))
+                .andExpect(jsonPath("$.required").value(0));
+        mvc.perform(put(incomePath).contentType(APPLICATION_JSON).content("{\"completed\":true}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(delete(incomePath + "/date")).andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget/until-payday").param("balance", "4000"))
+                .andExpect(jsonPath("$.nextIncomeDate").value(today.plusDays(7).toString()))
+                .andExpect(jsonPath("$.required").value(1000));
+        mvc.perform(put(expensePath + "/date").contentType(APPLICATION_JSON).content("{}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(put(expensePath + "/date").contentType(APPLICATION_JSON).content("{\"date\":\"2201-01-01\"}"))
+                .andExpect(status().isUnprocessableContent());
+    }
+
+    @Test void postponingNextMonthsIncomeChangesTheRepaymentPlan() throws Exception {
+        YearMonth month = YearMonth.now();
+        UUID salary = UUID.randomUUID();
+        createDebt("""
+                {"name":"Долг","principal":2500,"annualRate":0,"monthlyPayment":1000,"firstPaymentDate":"%s"}
+                """.formatted(month.atDay(1)));
+        mvc.perform(put("/api/budget").contentType(APPLICATION_JSON).content("""
+                {"incomes":[{"id":"%s","name":"Зарплата","amount":1000,"day":1}],"expenses":[]}
+                """.formatted(salary))).andExpect(jsonPath("$.plan.status").value("COMPLETE"));
+        String path = "/api/budget/calendar/" + month.plusMonths(1) + "/entries/" + salary + "/date";
+        mvc.perform(put(path).contentType(APPLICATION_JSON)
+                .content("{\"date\":\"" + month.plusMonths(2).atDay(1) + "\"}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget")).andExpect(jsonPath("$.plan.status").value("SHORTFALL"))
+                .andExpect(jsonPath("$.plan.shortfall.month").value(month.plusMonths(1).toString()));
+        mvc.perform(delete(path)).andExpect(status().isNoContent());
+        mvc.perform(get("/api/budget")).andExpect(jsonPath("$.plan.status").value("COMPLETE"));
     }
 
     @Test void calendarMarksSkipPaidExpensesAndEarlyIncomeWithoutMarkingLaterOccurrences() throws Exception {

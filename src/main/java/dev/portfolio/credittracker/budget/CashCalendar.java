@@ -7,6 +7,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
+import java.util.Map;
+import java.util.HashSet;
 import java.util.UUID;
 
 import static dev.portfolio.credittracker.budget.BudgetController.Budget;
@@ -15,9 +17,17 @@ import static dev.portfolio.credittracker.domain.AmortizationCalculator.ZERO;
 
 final class CashCalendar {
     enum Kind { INCOME, EXPENSE, PAYMENT, RECORDED_PAYMENT }
-    record Event(LocalDate date, Kind kind, String name, BigDecimal amount, UUID entryId) {
+    record Event(LocalDate date, Kind kind, String name, BigDecimal amount, UUID entryId,
+                 YearMonth occurrenceMonth, LocalDate plannedDate) {
         Event(LocalDate date, Kind kind, String name, BigDecimal amount) {
-            this(date, kind, name, amount, null);
+            this(date, kind, name, amount, null, null, null);
+        }
+        Event(LocalDate date, Kind kind, String name, BigDecimal amount, UUID entryId) {
+            this(date, kind, name, amount, entryId, YearMonth.from(date), date);
+        }
+        Event scheduled(Map<Occurrence, LocalDate> dates) {
+            LocalDate scheduled = dates.getOrDefault(new Occurrence(entryId, occurrenceMonth), date);
+            return new Event(scheduled, kind, name, amount, entryId, occurrenceMonth, plannedDate);
         }
     }
     record Occurrence(UUID entryId, YearMonth month) {}
@@ -30,9 +40,9 @@ final class CashCalendar {
                       int undatedExpenses, boolean incompleteDebtSchedule) {}
 
     static Result build(YearMonth month, BigDecimal opening, Budget budget, List<Event> debtEvents,
-                        boolean incompleteDebtSchedule, Set<Occurrence> marks) {
+                        boolean incompleteDebtSchedule, Set<Occurrence> marks, Map<Occurrence, LocalDate> dates) {
         var events = new ArrayList<>(debtEvents);
-        events.addAll(budgetEvents(month, budget));
+        events.addAll(scheduledBudgetEvents(month, budget, dates));
         int undated = undatedCount(budget.incomes()) + undatedCount(budget.expenses());
         events.sort(Comparator.comparing(Event::date).thenComparing(Event::kind));
         BigDecimal balance = opening;
@@ -53,21 +63,27 @@ final class CashCalendar {
     }
 
     static PaydayPlan untilPayday(LocalDate today, BigDecimal balance, Budget budget,
-                                  List<RepaymentPlanner.Month> schedule, Set<Occurrence> marks) {
+                                  List<RepaymentPlanner.Month> schedule, Set<Occurrence> marks,
+                                  Map<Occurrence, LocalDate> dates) {
         YearMonth start = YearMonth.from(today);
         var incomes = new ArrayList<Event>();
         for (var entry : budget.incomes()) {
             if (entry.day() == null) continue;
             YearMonth month = start;
-            LocalDate date = dayOfMonth(month, entry.day());
-            while (!date.isAfter(today) || marks.contains(new Occurrence(entry.id(), month))) {
+            while (!dayOfMonth(month, entry.day()).isAfter(today)
+                    || dates.containsKey(new Occurrence(entry.id(), month))
+                    || marks.contains(new Occurrence(entry.id(), month))) {
                 month = month.plusMonths(1);
-                date = dayOfMonth(month, entry.day());
             }
-            incomes.add(new Event(date, Kind.INCOME, entry.name(), entry.amount(), entry.id()));
+            incomes.add(new Event(dayOfMonth(month, entry.day()), Kind.INCOME, entry.name(), entry.amount(), entry.id()));
+        }
+        for (var occurrence : dates.keySet()) {
+            budgetEvents(occurrence.month(), budget).stream()
+                    .filter(event -> occurrence.entryId().equals(event.entryId()) && event.kind() == Kind.INCOME)
+                    .map(event -> event.scheduled(dates)).forEach(incomes::add);
         }
         budget.oneOffs().stream().filter(entry -> entry.direction() == BudgetController.Direction.INCOME)
-                .map(CashCalendar::oneOffEvent).forEach(incomes::add);
+                .map(CashCalendar::oneOffEvent).map(event -> event.scheduled(dates)).forEach(incomes::add);
         LocalDate payday = incomes.stream().filter(event -> !completed(event, marks))
                 .map(Event::date).filter(date -> date.isAfter(today))
                 .min(Comparator.naturalOrder()).orElse(null);
@@ -82,10 +98,9 @@ final class CashCalendar {
         }
         var upcoming = new ArrayList<Event>();
         for (YearMonth month = start; !month.isAfter(YearMonth.from(payday)); month = month.plusMonths(1)) {
-            addEntries(upcoming, month, budget.expenses(), Kind.EXPENSE);
+            scheduledBudgetEvents(month, budget, dates).stream()
+                    .filter(event -> event.kind() == Kind.EXPENSE).forEach(upcoming::add);
         }
-        budget.oneOffs().stream().filter(entry -> entry.direction() == BudgetController.Direction.EXPENSE)
-                .map(CashCalendar::oneOffEvent).forEach(upcoming::add);
         schedule.stream().flatMap(month -> month.payments().stream()).map(CashCalendar::debtEvent).forEach(upcoming::add);
         var obligations = upcoming.stream()
                 .filter(event -> !event.date().isBefore(today) && event.date().isBefore(payday))
@@ -106,8 +121,18 @@ final class CashCalendar {
         return events;
     }
 
+    static List<Event> scheduledBudgetEvents(YearMonth month, Budget budget, Map<Occurrence, LocalDate> dates) {
+        var sourceMonths = new HashSet<YearMonth>();
+        sourceMonths.add(month);
+        dates.forEach((occurrence, date) -> {
+            if (YearMonth.from(date).equals(month)) sourceMonths.add(occurrence.month());
+        });
+        return sourceMonths.stream().flatMap(source -> budgetEvents(source, budget).stream())
+                .map(event -> event.scheduled(dates)).filter(event -> YearMonth.from(event.date()).equals(month)).toList();
+    }
+
     private static boolean completed(Event event, Set<Occurrence> marks) {
-        return event.entryId() != null && marks.contains(new Occurrence(event.entryId(), YearMonth.from(event.date())));
+        return event.entryId() != null && marks.contains(new Occurrence(event.entryId(), event.occurrenceMonth()));
     }
 
     static Event debtEvent(RepaymentPlanner.Payment payment) {

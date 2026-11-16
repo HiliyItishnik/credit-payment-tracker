@@ -6,6 +6,7 @@
   <title>Бюджет и план погашения — Платёж</title>
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/budget.css">
+  <script src="/request.js" defer></script>
   <script src="/budget.js" defer></script>
 </head>
 <body>
@@ -92,7 +93,8 @@
       <section class="card budget-card budget-tool" aria-labelledby="calendar-title">
         <h2 id="calendar-title">Календарь денег</h2>
         <p class="subtle">Укажи дни в строках бюджета. Календарь покажет, хватит ли денег к дате обязательного платежа. Остаток на начало месяца вводится отдельно.</p>
-        <p class="subtle">Отметь полученные доходы и оплаченные расходы. Повторное нажатие снимает отметку. Календарь показывает суммы по плановым датам, а расчёт до поступления пропускает отмеченные операции.</p>
+        <p class="subtle">Отметь полученные доходы и оплаченные расходы. Повторное нажатие снимает отметку. Календарь считает остаток с начала месяца, а расчёт до поступления пропускает отмеченные операции.</p>
+        <p class="subtle">Нажми «Перенести» под датой, чтобы изменить день выбранной операции, в том числе на другой месяц. План погашения и расчёт до поступления учтут новую дату.</p>
         <form id="calendar-form" class="budget-inline">
           <label>Месяц<input id="calendar-month" type="month" required></label>
           <label>Остаток на начало месяца, ₽<input id="calendar-opening" inputmode="decimal" value="0" required></label>

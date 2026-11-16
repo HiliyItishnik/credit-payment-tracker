@@ -25,12 +25,7 @@ function element(tag, content, className) {
 }
 
 async function budgetApi(options, path = '') {
-  const response = await fetch('/api/budget' + path, options);
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || 'Не удалось загрузить или сохранить бюджет.');
-  }
-  return response.status === 204 ? null : response.json();
+  return requestJson('/api/budget' + path, options);
 }
 
 function markEdited() {
@@ -360,14 +355,16 @@ async function loadCalendar(month, opening) {
     if (rows.length) {
       const kinds = {INCOME: 'Доход', EXPENSE: 'Расход', PAYMENT: 'Платёж по графику', RECORDED_PAYMENT: 'Записанный платёж'};
       tableInto('calendar-results', ['Дата', 'Операция', 'Сумма', 'Остаток', 'Статус'], rows.map(({event, balance, completed}) => [
-        dayName(event.date), kinds[event.kind] + ' · ' + event.name,
+        calendarDateControl(month, opening, event), kinds[event.kind] + ' · ' + event.name,
         money(event.kind === 'INCOME' ? event.amount : -event.amount), money(balance),
         calendarMarkButton(month, opening, event, completed)
       ]));
     }
+    return true;
   } catch (error) {
     message.classList.add('error');
     message.textContent = error.message;
+    return false;
   } finally {
     setToolBusy(form, false);
   }
@@ -379,31 +376,74 @@ function calendarMarkButton(month, opening, event, completed) {
   const action = event.kind === 'INCOME' ? 'Отметить получение' : 'Отметить оплату';
   const button = element('button', completed ? label + ' ✓' : action, 'button secondary');
   button.type = 'button';
-  button.dataset.entryId = event.entryId;
+  button.dataset.eventKey = event.occurrenceMonth + '/' + event.entryId;
   button.setAttribute('aria-label', label + ' · ' + event.name + ' · ' + dayName(event.date));
   button.setAttribute('aria-pressed', String(completed));
-  button.addEventListener('click', async () => {
-    const buttons = $('calendar-results').querySelectorAll('button');
-    const form = $('calendar-form');
-    for (const control of buttons) control.disabled = true;
-    setToolBusy(form, true);
-    try {
-      await budgetApi(jsonPut({completed: !completed}), '/calendar/' + month + '/entries/' + event.entryId);
-      resetPayday();
-      await loadCalendar(month, opening);
-      const updated = [...$('calendar-results').querySelectorAll('button')]
-        .find(control => control.dataset.entryId === event.entryId);
-      updated?.focus();
-    } catch (error) {
-      $('calendar-message').classList.add('error');
-      $('calendar-message').textContent = error.message;
-      button.focus();
-    } finally {
-      for (const control of buttons) control.disabled = false;
-      setToolBusy(form, false);
-    }
-  });
+  button.addEventListener('click', () => updateCalendarEntry(month, opening, event, jsonPut({completed: !completed})));
   return button;
+}
+
+function calendarDateControl(month, opening, event) {
+  if (!event.entryId) return dayName(event.date);
+  const container = element('div', '', 'calendar-date');
+  container.append(element('span', dayName(event.date)));
+  if (event.date !== event.plannedDate) {
+    container.append(element('span', 'План · ' + dateWithYear(event.plannedDate), 'subtle'));
+  }
+  const details = element('details');
+  details.append(element('summary', 'Перенести'));
+  const form = element('form', '', 'calendar-date-form');
+  const label = element('label', 'Новая дата');
+  const input = element('input');
+  input.type = 'date';
+  input.required = true;
+  input.min = currentMonth + '-01';
+  input.max = '2200-12-31';
+  input.value = event.date;
+  input.setAttribute('aria-label', 'Новая дата · ' + event.name + ' · ' + event.occurrenceMonth);
+  label.append(input);
+  const save = element('button', 'Сохранить дату', 'button secondary');
+  save.type = 'submit';
+  form.append(label, save);
+  form.addEventListener('submit', submit => {
+    submit.preventDefault();
+    updateCalendarEntry(month, opening, event, jsonPut({date: input.value}), '/date',
+      'Операция перенесена на ' + dateWithYear(input.value) + '.');
+  });
+  if (event.date !== event.plannedDate) {
+    const reset = element('button', 'Вернуть плановую дату', 'button secondary');
+    reset.type = 'button';
+    reset.addEventListener('click', () => updateCalendarEntry(month, opening, event, {method: 'DELETE'}, '/date',
+      'Операция возвращена на ' + dateWithYear(event.plannedDate) + '.'));
+    form.append(reset);
+  }
+  details.append(form);
+  container.append(details);
+  return container;
+}
+
+async function updateCalendarEntry(month, opening, event, options, suffix = '', success = '') {
+  const controls = $('calendar-results').querySelectorAll('button, input');
+  for (const control of controls) control.disabled = true;
+  setToolBusy($('calendar-form'), true);
+  setBusy(true);
+  try {
+    await budgetApi(options, '/calendar/' + event.occurrenceMonth + '/entries/' + event.entryId + suffix);
+    resetPayday();
+    if (suffix) renderBudget(await budgetApi());
+    const loaded = await loadCalendar(month, opening);
+    if (loaded && success) $('calendar-message').textContent = success + ' ' + $('calendar-message').textContent;
+    const updated = [...$('calendar-results').querySelectorAll('button')]
+      .find(control => control.dataset.eventKey === event.occurrenceMonth + '/' + event.entryId);
+    (updated ?? $('calendar-month')).focus();
+  } catch (error) {
+    $('calendar-message').classList.add('error');
+    $('calendar-message').textContent = error.message;
+  } finally {
+    for (const control of controls) control.disabled = false;
+    setToolBusy($('calendar-form'), false);
+    setBusy(false);
+  }
 }
 
 $('calendar-form').addEventListener('submit', event => {
@@ -495,15 +535,21 @@ $('budget-form').addEventListener('submit', async event => {
   }
 });
 
+function renderBudget(result) {
+  const {budget} = result;
+  for (const group of groups) {
+    $(group).replaceChildren();
+    for (const entry of budget[group]) addEntry(group, entry);
+  }
+  $('budget-reserve').value = budget.reserve;
+  $('budget-opening-reserve').value = budget.openingReserve;
+  $('budget-form').hidden = false;
+  renderOverview(result);
+}
+
 async function loadBudget() {
   try {
-    const result = await budgetApi();
-    const {budget} = result;
-    for (const group of groups) for (const entry of budget[group]) addEntry(group, entry);
-    $('budget-reserve').value = budget.reserve;
-    $('budget-opening-reserve').value = budget.openingReserve;
-    $('budget-form').hidden = false;
-    renderOverview(result);
+    renderBudget(await budgetApi());
   } catch (error) {
     showError(error);
   } finally {
